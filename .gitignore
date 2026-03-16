@@ -1,0 +1,83 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+#
+# Template version: v1.21.0
+
+#######################################################
+# KEEP ITEMS IN ALPHABETICAL ORDER WITHIN THEIR GROUP #
+#######################################################
+
+# Temporary and binary files
+*~
+*.log
+*.pot
+*.py[cod]
+*.orig
+*.so
+*.stamp
+*.swp
+.DS_Store
+.cache/*
+__pycache__/*
+wip/*
+**/.ipynb_checkpoints/*
+**/.thumbs/*
+
+# Project files
+.dmypy.json
+.idea
+.project
+.pydevproject
+.ropeproject
+.settings
+.vscode
+tags
+
+# Package files
+*.egg
+*.eggs/
+*.egg-info
+.installed.cfg
+
+# Unittest and coverage
+htmlcov/*
+.coverage
+.coverage.*
+.tox
+junit*.xml
+coverage.xml
+.pytest_cache/
+
+# Build and docs folder/files
+**/.pybuild/*
+_build/*
+_coverage/*
+build/*
+cover/*
+debian/*
+dist/*
+docs/_api/*
+docs/_rst/*
+docs/_build/*
+ros2_ws/*
+sdist/*
+MANIFEST
+*.obj-*-gnu
+
+# Per-project virtualenvs
+.venv*/
+.conda*/
+venv*/*
+
+# Jupyter files
+*checkpoint.ipynb
+
+# Custom
+src/schedulestream/applications/custream/cache/
+
