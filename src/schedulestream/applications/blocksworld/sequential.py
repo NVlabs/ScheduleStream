@@ -120,9 +120,7 @@ def sequential(
     from schedulestream.applications.blocksworld.visualize import visualize_plan
 
     frames = visualize_plan(
-        problem,
-        solution.plan,
-        record=video_path,
+        problem, solution.plan, record=video_path, height=200 if video_path else 480
     )
     save_frames(frames, video_path=video_path)
     return solution

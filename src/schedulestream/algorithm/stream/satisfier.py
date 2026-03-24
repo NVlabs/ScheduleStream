@@ -396,9 +396,7 @@ class Binding:
 
     def next_outputs(self, verbose: bool = False) -> List[StreamOutput]:
         stream_outputs = self.stream_instance.get_outputs(
-            self.iteration,
-            context=self.context,
-            verbose=True,
+            self.iteration, context=self.context, verbose=False
         )
         self.skeleton.num_calls[self.index] += 1
 

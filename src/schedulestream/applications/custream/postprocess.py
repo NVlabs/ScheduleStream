@@ -138,7 +138,6 @@ def postprocess_plan(
         sequential_plan = sequential_from_timed(timed_plan, over=False)
         if visualize:
             visualize_plan(sequential_plan)
-
         for event1, event2 in compute_partial_orders(sequential_plan):
             durative1 = event1.durative_instance
             durative2 = event2.durative_instance

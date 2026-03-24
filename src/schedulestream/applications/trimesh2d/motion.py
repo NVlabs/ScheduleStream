@@ -358,9 +358,7 @@ def motion(
 
     draw_plan(state, solution.plan)
     frames = animate_plan(
-        state,
-        solution.plan,
-        record=video_path,
+        state, solution.plan, record=video_path, height=200 if video_path else 480
     )
     save_frames(frames, video_path=video_path)
 

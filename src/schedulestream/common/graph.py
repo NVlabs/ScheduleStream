@@ -131,11 +131,11 @@ def get_components(
 def dfs_topological_sort(
     edges: Iterable[Edge], vertices: Optional[Iterable[Vertex]] = None
 ) -> Sort:
+    incoming_from_vertex = get_incoming_from_vertex(edges)
     if vertices is None:
         vertices = vertices_from_edges(edges)
-    incoming_from_vertex = get_incoming_from_vertex(edges)
-    source_vertices = [vertex for vertex in vertices if not incoming_from_vertex[vertex]]
-    order = dfs(edges, source_vertices)
+        vertices = [vertex for vertex in vertices if not incoming_from_vertex[vertex]]
+    order = dfs(edges, vertices)
     return order[::-1]
 
 

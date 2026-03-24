@@ -71,7 +71,7 @@ AtPose = Function(["?obj"], condition=Object("?obj"))
 Attached = Function(["?obj"], condition=Object("?obj"))
 Supporting = Predicate(["?obj"], condition=Object("?obj"))
 
-Graspable = Predicate(["?arm", "?obj"], condition=Object("?arm") & Object("?obj"))
+Graspable = Predicate(["?arm", "?obj"], condition=Arm("?arm") & Object("?obj"))
 Placeable = Predicate(["?obj", "?obj2"], condition=Object("?obj") & Object("?obj2"))
 
 Placement = Predicate(["?obj", "?placement"], condition=Object("?obj"))
@@ -159,7 +159,6 @@ def create_actions(world: World, collisions: bool = True) -> List[Action]:
         & (Attached("?obj") <= "?arm")
         & ~Moved("?arm"),
         min_duration=Duration("?arm", "?traj"),
-        cost=1e-6,
     )
     place = DurativeAction(
         parameters="?arm ?obj ?grasp ?placement ?o2 ?p2 ?conf1 ?conf2 ?traj",
@@ -176,7 +175,6 @@ def create_actions(world: World, collisions: bool = True) -> List[Action]:
         & (Attached("?obj") <= "?o2")
         & ~Moved("?arm"),
         min_duration=Duration("?arm", "?traj"),
-        cost=1e-6,
     )
     rename_anonymous(locals())
     return [move, pick, place]
@@ -397,10 +395,10 @@ def solve_tamp(
         solutions = solve(
             problem,
             sequential=sequential,
-            lazy=False,
-            heuristic_fn="hmax",
+            lazy=True,
+            heuristic_fn="relaxed",
             successor_fn="offline",
-            weight=1,
+            weight=5,
             satisfy_time=1.0,
             optimize_time=1.0,
             num_reschedule=1,

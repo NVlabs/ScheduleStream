@@ -181,7 +181,7 @@ def constant_fn(value: Any) -> Callable[[Any], Any]:
 
 
 true_test = constant_fn(True)
-false_test = constant_fn(True)
+false_test = constant_fn(False)
 empty_list_gen_fn = from_fn(constant_fn(None))
 
 

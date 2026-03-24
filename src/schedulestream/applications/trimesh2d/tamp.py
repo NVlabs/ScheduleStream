@@ -467,7 +467,7 @@ def tamp(
     plan = solution.plan
     states = list(schedule_states(state, plan))
 
-    frames = world.animate(states, record=video_path)
+    frames = world.animate(states, record=video_path, height=200 if video_path else 480)
     save_frames(frames, video_path)
 
     return solutions

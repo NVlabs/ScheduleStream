@@ -233,7 +233,6 @@ def best_first_search(
         f" {min_estimate:.2e} | Elapsed: {elapsed_time(start_time):.2f} sec"
     )
     best_solution.optimal |= heuristic.safe and not queue
-
     return best_solution
 
 

@@ -10,6 +10,10 @@ its affiliates is strictly prohibited.
 -->
 # IsaacLab TAMP Demonstration Generation
 
+Implements a version of the following [paper](https://arxiv.org/abs/2305.16309) 
+but applied to [Isaaclab](https://isaac-sim.github.io/IsaacLab/main/index.html) and
+using [ScheduleStream](https://arxiv.org/abs/2511.04758) instead of [PDDLStream](https://arxiv.org/abs/1802.08705) 
+
 ### [🌐 Project Website](https://mihdalal.github.io/optimus/) | [📝 Paper](https://arxiv.org/abs/2305.16309)
 
 > **Imitating Task and Motion Planning with Visuomotor Transformers**  
@@ -38,7 +42,6 @@ its affiliates is strictly prohibited.
 ## Installation
 
 Install IsaacLab: [instructions](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index)
-
 ```bash
 $ conda create -n env_isaaclab python=3.11
 $ conda activate env_isaaclab
@@ -51,7 +54,6 @@ $ conda activate env_isaaclab
 ```
 
 Install cuRobo through SkillGen: [instructions](https://isaac-sim.github.io/IsaacLab/main/source/overview/imitation-learning/skillgen.html)
-
 ```bash
 (env_isaaclab) $ conda install -c nvidia cuda-toolkit=12.8 -y && \
   export CUDA_HOME="$CONDA_PREFIX" && \
@@ -59,6 +61,12 @@ Install cuRobo through SkillGen: [instructions](https://isaac-sim.github.io/Isaa
   export LD_LIBRARY_PATH="$CUDA_HOME/lib:$LD_LIBRARY_PATH" && \
   export TORCH_CUDA_ARCH_LIST="8.0+PTX" && \
   pip install -e "git+https://github.com/NVlabs/curobo.git@ebb71702f3f70e767f40fd8e050674af0288abe8#egg=nvidia-curobo" --no-build-isolation
+```
+
+Install ScheduleStream
+```bash
+(env_isaaclab) $ cd ScheduleStream
+(env_isaaclab) ScheduleStream$ pip install -e .[isaaclab]
 ```
 
 ## Examples

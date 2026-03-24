@@ -10,47 +10,78 @@ its affiliates is strictly prohibited.
 -->
 # cuStream
 
-GPU-Accelerated Multi-Robot Task and Motion Planning (TAMP)
+TAMP with [cuRobo](https://curobo.org/) collision and inverse kinematics primitives
+
+Installation and examples repeated from: [README](README.md)
+
+## Installation
+
+Install cuRobo: [instructions](https://curobo.org/get_started/1_install_instructions.html)
+
+```bash
+$ git clone https://github.com/NVlabs/curobo.git
+$ cd curobo
+curobo$ pip install -e . --no-build-isolation
+curobo$ cd ../ScheduleStream
+ScheduleStream$ pip install -e .[custream]
+```
+
+## Examples
+
+### Tutorial
+
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/tutorial.py
+```
+
+### Hold
+
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/example.py --task hold
+```
+
+<img src="/images/hold2_26-03-16_11-55-45.gif">
+
+### Stack
+
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/example.py --task stack
+```
+
+<img src="/images/stack2_26-03-16_11-56-23.gif">
+
+### Pack
+
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/example.py --task pack
+```
+
+<img src="/images/pack2_26-03-16_11-52-54.gif">
+
 
 ## Scripts
 
-Utility scripts.
+cuStream utility scripts
 
-### Yourdf
+### URDF Visualization
 
-Load and visualize a URDF.
+Load and visualize a URDF
 
-```commandline
-ScheduleStream$ ./src/schedulestream/applications/custream/yourdf.py src/schedulestream/applications/custream/assets/SO-ARM100/Simulation/SO100/so100.urdf
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/yourdf.py <ROBOT.URDF>
 ```
 
-### Spheres
+### Collision Spheres
 
-Create collision spheres for a URDF.
+Create collision spheres for a URDF
 
-```commandline
-ScheduleStream$ ./src/schedulestream/applications/custream/spheres.py src/schedulestream/applications/custream/assets/SO-ARM100/Simulation/SO100/so100.urdf
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/spheres.py <ROBOT.URDF>
 ```
 
-### Robot Config
+### YAML Robot Config
 
-Create a cuRobo robot config YAML.
-```commandline
-ScheduleStream$ ./src/schedulestream/applications/custream/config.py src/schedulestream/applications/custream/assets/SO-ARM100/Simulation/SO100/so100.urdf
-```
-
-### Problems
-
-Visualize existing cuStream problems.
-
-```commandline
-ScheduleStream$ ./src/schedulestream/applications/custream/problem.py -p so100
-```
-
-### Multi-Robot
-
-Solve a 1D multi-robot scheduling problem.
-
-```commandline
-ScheduleStream$ ./src/schedulestream/applications/custream/retime.py
+Create a cuRobo robot config YAML
+```bash
+ScheduleStream$ ./src/schedulestream/applications/custream/config.py <ROBOT.URDF>
 ```

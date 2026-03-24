@@ -124,6 +124,12 @@ isaaclab = [
   "warp-lang==1.9.0",
 ]
 
+cumotion = [
+  "trimesh",
+  "pyglet<2",
+  "structlog",
+]
+
 [project.scripts]
 # Add here CLI scripts here:
 

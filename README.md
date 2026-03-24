@@ -10,7 +10,21 @@ its affiliates is strictly prohibited.
 -->
 # ScheduleStream
 
-Temporal Planning with Samplers for Robot Task and Motion Planning (TAMP)
+<!--Temporal Planning with Samplers for Robot Task and Motion Planning (TAMP)-->
+
+ScheduleStream is a framework for planning & scheduling with continuous sampling operations 
+motivated by the application of multi-arm robot Task and Motion Planning (TAMP).
+See the following ICRA 2026 [paper](https://arxiv.org/abs/2511.04758) for motivation & background, 
+a tutorial on the ScheduleStream planning language, and a description of several ScheduleStream algorithms.
+
+ScheduleStream is domain independent and thus both supports different robotics backends 
+and can even be applied to applications beyond robotics. The currently supported applications are:
+* [cuStream](#custream): TAMP w/ [cuRobo](https://curobo.org/)
+* [IsaacLab](#isaaclab): TAMP automated demonstration generation
+* [cuMotion](#cumotion): TAMP w/ [cuMotion](https://nvidia-isaac.github.io/cumotion/index.html)
+* [Trimesh 2D](#trimesh-2d): TAMP in a 2D plane w/ [trimesh](https://trimesh.org/)
+* [Blocksworld](#blocksworld): Discrete sequential and temporal planning in [blocksworld](https://en.wikipedia.org/wiki/Blocks_world) 
+
 
 ### [🌐 Project Website](https://schedulestream.github.io/) | [📝 Paper](https://arxiv.org/abs/2511.04758)
 
@@ -39,6 +53,8 @@ Temporal Planning with Samplers for Robot Task and Motion Planning (TAMP)
 
 ## Installation
 
+Minimal installation instructions:
+
 ```bash
 $ git clone git@github.com:NVlabs/ScheduleStream.git
 $ cd ScheduleStream
@@ -46,14 +62,30 @@ ScheduleStream$ pip install -e .
 ```
 <!-- ScheduleStream$ git submodule update --init --recursive -->
 
-## Examples
+Follow the instructions per application to install application-specific dependencies
 
-#### Minimal Example
+## Applications <!-- Examples -->
+
+Minimal example that serves as a tutorial (mirroring the [paper](https://arxiv.org/abs/2511.04758)): 
 ```bash
 ScheduleStream$ ./src/schedulestream/applications/minimal.py
 ```
 
+The currently supported applications are:
+* [cuStream](#custream): TAMP w/ [cuRobo](https://curobo.org/)
+* [IsaacLab](#isaaclab): TAMP automated demonstration generation in [IsaacLab](https://isaac-sim.github.io/IsaacLab/main/index.html)
+* [cuMotion](#cumotion): TAMP w/ [cuMotion](https://nvidia-isaac.github.io/cumotion/index.html)
+* [Trimesh 2D](#trimesh-2d): TAMP in a 2D plane w/ [trimesh](https://trimesh.org/)
+* [Blocksworld](#blocksworld): Discrete sequential and temporal planning in [blocksworld](https://en.wikipedia.org/wiki/Blocks_world) 
+
+
 ### cuStream
+
+TAMP with [cuRobo](https://curobo.org/) collision and inverse kinematics primitives
+
+This is the recommended TAMP application. 
+See [cuStream](src/schedulestream/applications/custream/) for additional utility scripts for
+URDF visualization, collision sphere computation, and YAML robot config computation.
 
 #### Installation
 
@@ -99,6 +131,8 @@ ScheduleStream$ ./src/schedulestream/applications/custream/example.py --task pac
 
 ### IsaacLab
 
+TAMP Demonstration Generation in IsaacLab
+
 See [IsaacLab TAMP Demonstration Generation](src/schedulestream/applications/isaaclab/)
 
 <img src="/images/tamp_agent_Isaac-Stack-Cube-Franka-IK-Rel-v0_26-03-12_11-33-24-step-0.gif">
@@ -106,7 +140,18 @@ See [IsaacLab TAMP Demonstration Generation](src/schedulestream/applications/isa
 <img src="/images/tamp_agent_Isaac-Stack-Cube-RedGreenBlue-Franka-IK-Rel-v0_26-03-12_11-06-56-step-0.gif">
 <img src="/images/tamp_agent_Isaac-Stack-Cube-BlueGreenRed-Franka-IK-Rel-v0_26-03-12_11-08-25-step-0.gif">
 
+### cuMotion
+
+TAMP with [cuMotion](https://nvidia-isaac.github.io/cumotion/index.html) collision and inverse kinematics primitives
+
+See [ScheduleStream with cuMotion](src/schedulestream/applications/cumotion/)
+
+<img src="/images/stack4_26-03-18_17-06-42.gif">
+
+
 ### Trimesh 2D
+
+TAMP and motion planning in a 2D plane with [trimesh](https://trimesh.org/) collision primitives
 
 #### Installation
 
@@ -132,6 +177,8 @@ ScheduleStream$ ./src/schedulestream/applications/trimesh2d/motion.py
 
 ### Blocksworld
 
+Discrete [blocksworld](https://en.wikipedia.org/wiki/Blocks_world) planning
+
 #### Temporal
 
 ```bash
@@ -151,5 +198,5 @@ ScheduleStream$ ./src/schedulestream/applications/blocksworld/temporal.py
 ## Tests
 
 ```bash
-$ nvplan$ pytest
+ScheduleStream$ pytest
 ```
