@@ -39,6 +39,9 @@ from typing import (
     Union,
 )
 
+# Third Party
+import yaml
+
 INF = float("inf")
 EPSILON = 1e-6
 SEPARATOR = "\n" + 80 * "-" + "\n"
@@ -410,6 +413,18 @@ def write_pickle(path: str, data: Any, verbose: bool = True) -> None:
         pickle.dump(data, f)
     if verbose:
         print(f"Saved {os.path.abspath(path)} in {elapsed_time(start_time):.3f} sec")
+
+
+def load_yaml(path: str) -> Any:
+    """Load a YAML file from ``path`` via ``yaml.safe_load``."""
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def write_yaml(data: Any, path: str) -> None:
+    """Serialize ``data`` to ``path`` via ``yaml.safe_dump``."""
+    with open(path, "w") as f:
+        yaml.safe_dump(data, f)
 
 
 class Key:
