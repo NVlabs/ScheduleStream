@@ -21,16 +21,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 # Third Party
 import numpy as np
 import yaml
-from curobo.types.robot import RobotConfig
-from curobo.util_file import get_robot_configs_path, load_yaml
 
 # NVIDIA
 from schedulestream.applications.custream.yourdf import Yourdf, load_robot_yourdf
 from schedulestream.common.graph import dfs, undirected_from_edges
-from schedulestream.common.utils import flatten, remove_duplicates
+from schedulestream.common.utils import flatten, load_yaml, remove_duplicates
 
 
-def load_robot_yaml(robot_yaml: Union[str, dict, RobotConfig]) -> dict:
+def load_robot_yaml(robot_yaml: Union[str, dict, Any]) -> dict:
+    # Third Party
+    from curobo.util_file import get_robot_configs_path
+
     configs_dir = get_robot_configs_path()
     if not isinstance(robot_yaml, str):
         robot_config = robot_yaml

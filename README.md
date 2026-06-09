@@ -83,6 +83,8 @@ The currently supported applications are:
 
 TAMP with [cuRobo](https://curobo.org/) collision and inverse kinematics primitives
 
+> **Note:** This example uses cuRoboV1, pinned to tag [v0.7.8](https://github.com/NVlabs/curobo/tree/v0.7.8).
+
 This is the recommended TAMP application. 
 See [cuStream](src/schedulestream/applications/custream/) for additional utility scripts for
 URDF visualization, collision sphere computation, and YAML robot config computation.
@@ -92,7 +94,7 @@ URDF visualization, collision sphere computation, and YAML robot config computat
 Install cuRobo: [instructions](https://curobo.org/get_started/1_install_instructions.html)
 
 ```bash
-$ git clone https://github.com/NVlabs/curobo.git
+$ git clone --branch v0.7.8 https://github.com/NVlabs/curobo.git
 $ cd curobo
 curobo$ pip install -e . --no-build-isolation
 curobo$ cd ../ScheduleStream
@@ -200,3 +202,11 @@ ScheduleStream$ ./src/schedulestream/applications/blocksworld/temporal.py
 ```bash
 ScheduleStream$ pytest
 ```
+
+## License
+
+ScheduleStream is released under the NVIDIA License (non-commercial use). See [LICENSE](LICENSE) for the full terms.
+
+## Third-Party Software
+
+This project will download and install additional third-party open source software projects. Review the license terms of these open source projects before use.

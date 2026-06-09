@@ -32,6 +32,7 @@ requires-python = ">=3.9"
 
 dependencies = [
   "setuptools-scm>=8.0.0",
+   "pyyaml",
 ]
 
 [project.optional-dependencies]

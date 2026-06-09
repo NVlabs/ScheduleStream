@@ -19,8 +19,17 @@ from typing import Annotated, Any, Iterable, Iterator, List, Literal, Optional, 
 import numpy as np
 import torch
 import trimesh
-from curobo.types.math import Pose
-from curobo.types.robot import JointState
+
+try:
+    # Third Party
+    from curobo.geom.types import Obstacle, Sphere
+    from curobo.types.math import Pose
+    from curobo.types.robot import JointState
+except ModuleNotFoundError:
+    from curobo.scene import Obstacle, Sphere
+    from curobo.types import JointState, Pose
+
+# Third Party
 from trimesh.transformations import (
     quaternion_about_axis,
     quaternion_from_euler,

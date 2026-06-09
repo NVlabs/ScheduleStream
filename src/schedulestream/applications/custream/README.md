@@ -12,6 +12,8 @@ its affiliates is strictly prohibited.
 
 TAMP with [cuRobo](https://curobo.org/) collision and inverse kinematics primitives
 
+> **Note:** This example uses cuRoboV1, pinned to tag [v0.7.8](https://github.com/NVlabs/curobo/tree/v0.7.8).
+
 Installation and examples repeated from: [README](README.md)
 
 ## Installation
@@ -19,7 +21,7 @@ Installation and examples repeated from: [README](README.md)
 Install cuRobo: [instructions](https://curobo.org/get_started/1_install_instructions.html)
 
 ```bash
-$ git clone https://github.com/NVlabs/curobo.git
+$ git clone --branch v0.7.8 https://github.com/NVlabs/curobo.git
 $ cd curobo
 curobo$ pip install -e . --no-build-isolation
 curobo$ cd ../ScheduleStream

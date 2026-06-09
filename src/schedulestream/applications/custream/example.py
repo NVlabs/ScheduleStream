@@ -10,6 +10,30 @@
 # its affiliates is strictly prohibited.
 #
 # Standard Library
+import importlib.metadata
+import sys
+
+# Third Party
+from packaging.version import Version
+
+_CUROBO_CUTOFF = Version("0.7.8")
+for _pkg in ("nvidia-curobo", "curobo"):
+    try:
+        _curobo_version = Version(importlib.metadata.version(_pkg))
+        break
+    except importlib.metadata.PackageNotFoundError:
+        pass
+else:
+    print("custream requires curobo <= 0.7.8, but curobo is not installed.", file=sys.stderr)
+    sys.exit(1)
+if _curobo_version > _CUROBO_CUTOFF:
+    print(
+        f"custream requires curobo <= {_CUROBO_CUTOFF}, but {_curobo_version} is installed.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+# Standard Library
 import argparse
 from functools import partial
 from typing import Any, List, Optional
