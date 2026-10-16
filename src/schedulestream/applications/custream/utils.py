@@ -25,9 +25,14 @@ try:
     from curobo.geom.types import Obstacle, Sphere
     from curobo.types.math import Pose
     from curobo.types.robot import JointState
+
+    CUROBO_V2 = False
 except ModuleNotFoundError:
+    # Third Party
     from curobo.scene import Obstacle, Sphere
     from curobo.types import JointState, Pose
+
+    CUROBO_V2 = True
 
 # Third Party
 from trimesh.transformations import (
@@ -110,8 +115,14 @@ def get_pose_distance(pose1: Pose, pose2: Pose, pos_step: float = 1e-2, ori_step
 def interpolate_poses(pose1: Pose, pose2: Pose, **kwargs: Any) -> Iterator[Pose]:
     pose_distance = get_pose_distance(pose1, pose2, **kwargs)
     num_steps = int(math.ceil(pose_distance)) + 1
-    for weight in np.linspace(start=0.0, stop=1.0, num=num_steps, endpoint=True):
-        yield pose_combination(pose1, pose2, weight)
+    if num_steps == 1:
+        yield pose1
+    elif num_steps == 2:
+        yield pose1
+        yield pose2
+    else:
+        for weight in np.linspace(start=0.0, stop=1.0, num=num_steps, endpoint=True):
+            yield pose_combination(pose1, pose2, weight)
 
 
 def interpolate_pose_list(poses: List[Pose], **kwargs: Any) -> Iterator[Pose]:
@@ -287,22 +298,22 @@ def invert_matrix(matrix: Matrix) -> Matrix:
 
 
 def transform_points(pose: Pose, points: torch.Tensor) -> torch.Tensor:
-    assert pose.n_goalset == 1
+    assert (pose.batch_size if CUROBO_V2 else pose.n_goalset) == 1
     if not isinstance(points, torch.Tensor):
         points = torch.Tensor(np.array(points)).to(pose.position.device)
     if len(points.shape) == 2:
         points = points.unsqueeze(0)
     if points.shape[0] == 1:
-        points = points.repeat(pose.batch, 1, 1)
+        points = points.repeat(pose.batch_size if CUROBO_V2 else pose.batch, 1, 1)
     return pose.batch_transform_points(points)
 
 
 def transform_spheres(pose: Pose, spheres: torch.Tensor) -> torch.Tensor:
-    assert pose.n_goalset == 1
+    assert (pose.batch_size if CUROBO_V2 else pose.n_goalset) == 1
     if len(spheres.shape) == 2:
         spheres = spheres.unsqueeze(0)
     if spheres.shape[0] == 1:
-        spheres = spheres.repeat(pose.batch, 1, 1)
+        spheres = spheres.repeat(pose.batch_size if CUROBO_V2 else pose.batch, 1, 1)
     transformed_centers = transform_points(pose, spheres[:, :, :3])
     transformed_spheres = torch.cat([transformed_centers, spheres[:, :, 3:]], dim=2)
     return transformed_spheres
@@ -395,3 +406,27 @@ def select(
     if (num is None) or (num >= len(sequence)):
         return sequence
     return sequence[:num]
+
+
+def create_sphere_obstacles(
+    points: List[Vector], radii: List[float], **kwargs: Any
+) -> List[Sphere]:
+    return [
+        Sphere(
+            name=f"sphere{i}" + str(i),
+            pose=pose_from_pos_quat(point).tolist(),
+            radius=radius,
+            **kwargs,
+        )
+        for i, (point, radius) in enumerate(zip(points, radii))
+    ]
+
+
+def add_obstacles(
+    obstacles: List[Obstacle], scene: Optional[trimesh.Scene] = None
+) -> trimesh.Scene:
+    if scene is None:
+        scene = trimesh.Scene()
+    for sphere in obstacles:
+        scene.add_geometry(sphere.get_trimesh_mesh(), transform=sphere.get_transform_matrix())
+    return scene

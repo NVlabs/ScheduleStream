@@ -140,6 +140,18 @@ class BoundingBox:
     def from_point(point: Vector) -> "BoundingBox":
         return BoundingBox.from_points([point])
 
+    @staticmethod
+    def from_spheres(spheres: List[Vector]) -> "BoundingBox":
+        spheres = np.asarray(spheres)
+        centers, radii = spheres[:, :3], spheres[:, 3:4]
+        lower = np.min(centers - radii, axis=0)
+        upper = np.max(centers + radii, axis=0)
+        return BoundingBox.from_bounds((lower, upper))
+
+    @staticmethod
+    def from_sphere(sphere: Vector) -> "BoundingBox":
+        return BoundingBox.from_spheres([sphere])
+
     def contains(self, points: List[Vector]) -> List[float]:
         batch = len(points)
         points = to_cpu(transform_points(self.pose.inverse(), points).squeeze(0))

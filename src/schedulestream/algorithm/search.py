@@ -172,7 +172,7 @@ def best_first_search(
 
         successors = list(_successor_fn(current_state))
         satisfies_goal = goal.holds(current_state)
-        if False:
+        if verbose:
             print(
                 f"{algorithm_name}) Iteration: {iteration} | Cost: {current_cost:.2e} | Goal:"
                 f" {satisfies_goal} | Successors: {len(successors)} | States: {len(tree)} | Best"
@@ -187,7 +187,7 @@ def best_first_search(
             )
             continue
 
-        for plan in _successor_fn(current_state):
+        for plan in successors:
             state, cost = current_state, current_cost
             for action in plan:
                 if not action.is_applicable(state):
@@ -248,18 +248,22 @@ greedy_best_first_search = partial(best_first_search, weight=INF, lazy=True)
 def iterative_search(
     problem: Problem,
     configs: List[Dict[str, Any]],
+    iteration_time: float = INF,
     max_time: float = INF,
     max_cost: float = INF,
+    greedy: bool = False,
     **kwargs,
 ) -> Solution:
     start_time = current_time()
     best_solution = Solution()
     for i, config in enumerate(configs):
-        print(SEPARATOR)
         remaining_time = max_time - elapsed_time(start_time)
+        if i < len(configs) - 1:
+            remaining_time = min(remaining_time, iteration_time)
         print(
-            f"{i+1}/{len(configs)}) Config: {config} | Best Cost: {best_solution.cost:.3f} |"
-            f" Elapsed: {elapsed_time(start_time):.3f} sec"
+            f"{iterative_search.__name__}) Iteration: {i+1}/{len(configs)} | Config: {config} |"
+            f" Best Cost: {best_solution.cost:.3f} | Remaining: {remaining_time:.3f} sec | Elapsed:"
+            f" {elapsed_time(start_time):.3f} sec"
         )
         solution = best_first_search(
             problem,
@@ -270,13 +274,30 @@ def iterative_search(
         )
         if solution.cost < best_solution.cost:
             best_solution = solution
-        if solution.optimal:
+        if solution.optimal or (greedy and solution.success):
             break
     return best_solution
 
 
-iterative_greedy_3_1_search = partial(
-    iterative_search, configs=[dict(weight=w) for w in [INF, 3, 1]]
+def iterative_best_first_search(
+    problem: Problem,
+    weight: Optional[Union[float, List[float]]] = None,
+    iteration_time: float = 0.5,
+    greedy: bool = True,
+    **kwargs: Any,
+) -> Solution:
+    if weight is None:
+        weight = [1, 3, 5]
+    weights = list(weight) if isinstance(weight, (list, tuple)) else [weight]
+    configs = [dict(weight=w) for w in weights]
+    return iterative_search(
+        problem, configs=configs, greedy=greedy, iteration_time=iteration_time, **kwargs
+    )
+
+
+anytime_best_first_search = partial(
+    iterative_best_first_search,
+    weight=[5, 3, 1],
 )
 
 
@@ -290,22 +311,35 @@ def serialized_search(
     scale: float = 100.0,
     **kwargs: Any,
 ) -> Solution:
+    start_time = current_time()
     if isinstance(problem.goal, Sequence):
         goals = list(problem.goal.sequence)
     else:
         goals = [problem.goal]
     if len(goals) <= 1:
-        return best_first_search(problem, heuristic_fn=heuristic_fn, lazy=lazy, **kwargs)
+        return iterative_best_first_search(problem, heuristic_fn=heuristic_fn, lazy=lazy, **kwargs)
     goals.reverse()
     stage_term = Stage()
+    stage_states = 0
+    total_states = 0
 
     def state_fn(state: State) -> Optional[State]:
+        nonlocal stage_states, total_states
+        stage_states += 1
+        total_states += 1
         stage = state.get_value(stage_term).unwrap()
         if stage is None:
             stage = len(goals) - 1
         goal = goals[stage]
         if (stage != 0) and goal.holds(state):
-            stage = max(0, stage - 1)
+            new_stage = max(0, stage - 1)
+            print(
+                f"{serialized_search.__name__}) Stage: {stage} -> {new_stage} | Stage States:"
+                f" {stage_states} | Total states: {total_states} | Elapsed:"
+                f" {elapsed_time(start_time):.2f} sec"
+            )
+            stage = new_stage
+            stage_states = 0
         evaluations = [Stage() <= stage]
         return state.new_state(evaluations)
 
@@ -323,12 +357,14 @@ def serialized_search(
         return estimate
 
     heuristic = Heuristic(staged_heuristic_fn, safe=True)
-    return best_first_search(problem, state_fn=state_fn, heuristic_fn=heuristic, **kwargs)
+    return iterative_best_first_search(problem, state_fn=state_fn, heuristic_fn=heuristic, **kwargs)
 
 
-def search(*args: Any, algorithm: str = "serialized", **kwargs: Any) -> Solution:
+def search(
+    problem: ProblemABC, *args: Any, algorithm: str = "serialized", **kwargs: Any
+) -> Solution:
+    if algorithm == "serialized" or isinstance(problem.goal, Sequence):
+        return serialized_search(problem, *args, **kwargs)
     if algorithm == "bfs":
-        return best_first_search(*args, **kwargs)
-    if algorithm == "serialized":
-        return serialized_search(*args, **kwargs)
+        return iterative_best_first_search(problem, *args, **kwargs)
     raise ValueError(algorithm)

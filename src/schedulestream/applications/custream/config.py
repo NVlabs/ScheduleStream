@@ -53,6 +53,11 @@ def load_robot_yaml(robot_yaml: Union[str, dict, Any]) -> dict:
     return robot_config
 
 
+def get_tool_links(robot_config: dict) -> List[str]:
+    kinematics = robot_config["robot_cfg"]["kinematics"]
+    return kinematics.get("link_names", [kinematics["ee_link"]])
+
+
 def get_active_links(yourdf: Yourdf, robot_config: dict, include_roots: bool = False) -> List[str]:
     kinematics = robot_config["robot_cfg"]["kinematics"]
     active_joints = kinematics["cspace"]["joint_names"]
@@ -75,6 +80,19 @@ def get_gripper_links(robot_config: dict, yourdf: Optional[Yourdf] = None) -> Li
         yourdf = load_robot_yourdf(kinematics["urdf_path"], load_meshes=False)
     gripper_joints = get_gripper_joints(robot_config, yourdf)
     return yourdf.get_active_links(joints=gripper_joints, include_roots=True)
+
+
+def get_hand_links(robot_config: dict, yourdf: Optional[Yourdf] = None) -> List[str]:
+    kinematics = robot_config["robot_cfg"]["kinematics"]
+    if yourdf is None:
+        yourdf = load_robot_yourdf(kinematics["urdf_path"], load_meshes=False)
+    locked_joints = list(kinematics["lock_joints"])
+    edges = list(yourdf.rigid_edges)
+    edges.extend(map(yourdf.get_joint_edge, locked_joints))
+    hand_links = []
+    for tool_link in get_tool_links(robot_config):
+        hand_links.extend(yourdf.get_link_cluster(tool_link, edges=edges))
+    return remove_duplicates(hand_links)
 
 
 def create_ignore_pairs(
@@ -218,7 +236,8 @@ def extract_robot_config(
     robot_config = copy.deepcopy(robot_config)
     kinematics = robot_config["kinematics"]
     cspace = kinematics["cspace"]
-    assert set(tool_links) <= set(kinematics["link_names"])
+    link_names = kinematics.get("link_names", [kinematics["ee_link"]])
+    assert set(tool_links) <= set(link_names)
 
     yourdf = load_robot_yourdf(kinematics["urdf_path"], load_meshes=False)
     active_joints = remove_duplicates(flatten(map(yourdf.get_active_joints, tool_links)))

@@ -44,6 +44,12 @@ class Predicate(Function):
         return self
 
     def instantiate(self, arguments: List[Argument]) -> "PredicateTerm":
+        try:
+            instance = self.instances.get(tuple(arguments))
+        except TypeError:
+            instance = None
+        if instance is not None:
+            return instance
         arguments = tuple(wrap_arguments(arguments))
         if arguments not in self.instances:
             self.instances[arguments] = PredicateTerm(self, list(arguments))
@@ -67,6 +73,7 @@ class Predicate(Function):
         conditional_generator: Optional[ConditionalGenerator],
         inputs: InputParameters,
         batch_size: Optional[int] = None,
+        max_outputs: Optional[int] = None,
         **kwargs: Any,
     ) -> PredicateStream:
         # NVIDIA
@@ -78,7 +85,12 @@ class Predicate(Function):
         if (batch_size is None) or (conditional_generator is None):
             return PredicateStream(conditional_generator, predicate=self, inputs=inputs, **kwargs)
         return BatchPredicateStream(
-            conditional_generator, predicate=self, inputs=inputs, batch_size=batch_size, **kwargs
+            conditional_generator,
+            predicate=self,
+            inputs=inputs,
+            batch_size=batch_size,
+            max_outputs=max_outputs,
+            **kwargs,
         )
 
 
@@ -110,6 +122,12 @@ class PredicateTerm(Term):
         return self.function
 
     def instantiate(self, argument: Constant) -> "Literal":
+        try:
+            instance = self.instances.get(argument)
+        except TypeError:
+            instance = None
+        if instance is not None:
+            return instance
         argument = wrap_argument(argument)
         if argument not in self.instances:
             if argument.value is True:
@@ -168,3 +186,7 @@ class NegatedAtom(Literal):
 
 
 Value = Type(name="Value")
+Unreachable = Predicate(name="Unreachable")
+Goal = Predicate(name="Goal")
+
+FUNCTIONS = list(filter(lambda f: isinstance(f, Function), locals().values()))

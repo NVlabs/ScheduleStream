@@ -35,7 +35,7 @@ from schedulestream.applications.custream.utils import (
     to_cpu,
     transform_spheres,
 )
-from schedulestream.common.utils import flatten, remove_duplicates
+from schedulestream.common.utils import downsample_range, flatten, remove_duplicates
 
 if TYPE_CHECKING:
     # NVIDIA
@@ -508,14 +508,18 @@ class Trajectory(Command):
         positions = self.full_joint_state.position
         link_state = self.world.get_link_state(confs=positions)
         indices = torch.cat([self.world.get_sphere_indices(link) for link in self.links])
-        spheres = link_state.link_spheres_tensor[:, indices, :]
+        spheres = link_state.link_spheres_tensor
+        spheres = spheres[:, indices, :]
 
         return spheres
 
-    def scene(self, scene: Optional[trimesh.Scene] = None) -> trimesh.Scene:
+    def scene(self, scene: Optional[trimesh.Scene] = None, downsample: int = 1) -> trimesh.Scene:
         if scene is None:
             scene = self.world.objects_scene()
-        spheres_world = self.spheres.reshape(-1, self.spheres.shape[-1])
+        spheres = self.spheres
+        indices = downsample_range(spheres.shape[0], downsample)
+        spheres = self.spheres[indices, ...]
+        spheres_world = spheres.reshape(-1, spheres.shape[-1])
         return add_spheres(spheres_world, scene=scene)
 
     def show(self, **kwargs: Any) -> None:

@@ -10,19 +10,27 @@
 #
 # Standard Library
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, Callable, Counter, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 # NVIDIA
+from schedulestream.algorithm.temporal import get_makespan, time_plan
 from schedulestream.algorithm.utils import Plan
 from schedulestream.common.ordered_set import OrderedSet
 from schedulestream.common.queue import StablePriorityQueue
-from schedulestream.common.utils import INF, current_time, elapsed_time, get_length, safe_max
+from schedulestream.common.utils import (
+    INF,
+    current_time,
+    elapsed_time,
+    get_length,
+    instance_cache,
+    safe_max,
+)
 from schedulestream.language.action import ActionInstance
-from schedulestream.language.durative import CLOCK, EndInstance, StartInstance
+from schedulestream.language.durative import CLOCK, EndInstance, StartInstance, get_ongoing_actions
 from schedulestream.language.expression import Formula
-from schedulestream.language.function import Evaluation
+from schedulestream.language.function import Evaluation, Term
 from schedulestream.language.predicate import Atom
 from schedulestream.language.problem import ProblemABC
 from schedulestream.language.state import State
@@ -46,10 +54,14 @@ def create_goal_heuristic_fn(problem: ProblemABC) -> HeuristicFn:
 class RelaxedNode:
     reached: bool = False
     cost: float = INF
-    parent_action: Optional[ActionInstance] = None
+    parent_actions: List[ActionInstance] = field(default_factory=list)
+
+    @property
+    def parent_action(self) -> Optional[ActionInstance]:
+        return self.parent_actions[0] if self.parent_actions else None
 
 
-@cache
+@instance_cache
 def get_preconditions(action: Union[ActionInstance, Formula]) -> List[Atom]:
     precondition = action.precondition if isinstance(action, ActionInstance) else action
     precondition.assert_conjunction()
@@ -80,6 +92,7 @@ def compute_costs(
     goal: Formula,
     actions: List[ActionInstance],
     operation: ReduceFn = sum,
+    unit_weight: float = 0.0,
     verbose: bool = False,
     **kwargs: Any,
 ) -> Dict[Evaluation, RelaxedNode]:
@@ -109,12 +122,12 @@ def compute_costs(
             cost = (1 - start_weight) * duration + CLOCK
         else:
             cost = action.cost.evaluate(state)
-        action._cost = cost
+        action._cost = 1.0 if unit_weight == INF else cost + unit_weight * 1.0
 
     for evaluation in evaluations:
         evaluation.processed = False
         evaluation.cost = INF
-        evaluation.parent = None
+        evaluation.parents = []
         evaluation.outgoing = []
         if evaluation.holds(state):
             evaluation.cost = 0.0
@@ -132,8 +145,10 @@ def compute_costs(
         for effect in action.effect.simple_clause:
             if effect_cost < effect.cost:
                 effect.cost = effect_cost
-                effect.parent = action
+                effect.parents = [action]
                 queue.push(effect_cost, effect)
+            elif effect.parents and not effect.processed and (effect_cost == effect.cost):
+                effect.parents.append(action)
         return False
 
     reached_goal = False
@@ -160,7 +175,7 @@ def compute_costs(
         reached_nodes[evaluation] = RelaxedNode(
             reached=evaluation.cost < INF,
             cost=evaluation.cost,
-            parent_action=evaluation.parent,
+            parent_actions=evaluation.parents,
         )
 
     if verbose:
@@ -174,42 +189,89 @@ def compute_costs(
     return reached_nodes
 
 
-def create_reachability_heuristic_fn(problem: ProblemABC, operation: ReduceFn) -> HeuristicFn:
+def create_reachability_heuristic_fn(
+    problem: ProblemABC, operation: ReduceFn, **kwargs: Any
+) -> HeuristicFn:
     problem = problem.instantiate()
 
     def heuristic_fn(state: State) -> float:
         goal = problem.goal
-        reached_nodes = compute_costs(state, goal, problem.actions, operation=operation)
+        reached_nodes = compute_costs(state, goal, problem.actions, operation=operation, **kwargs)
         heuristic = operation(reached_nodes[e].cost for e in get_preconditions(goal))
         return heuristic
 
     return cache(heuristic_fn)
 
 
-def create_hmax_heuristic_fn(problem: ProblemABC) -> HeuristicFn:
-    return create_reachability_heuristic_fn(problem, operation=safe_max)
+def create_hmax_heuristic_fn(problem: ProblemABC, **kwargs: Any) -> HeuristicFn:
+    return create_reachability_heuristic_fn(problem, operation=safe_max, **kwargs)
 
 
-def create_hadd_heuristic_fn(problem: ProblemABC) -> HeuristicFn:
-    return create_reachability_heuristic_fn(problem, operation=sum)
+def create_hadd_heuristic_fn(problem: ProblemABC, **kwargs: Any) -> HeuristicFn:
+    return create_reachability_heuristic_fn(problem, operation=sum, **kwargs)
+
+
+@dataclass
+class RetraceContext:
+    values: Dict[Term, Any] = field(default_factory=dict)
+    selected: Set[ActionInstance] = field(default_factory=set)
+    subplans: Dict[ActionInstance, Tuple[ActionInstance, ...]] = field(default_factory=dict)
+
+
+def default_subplan(
+    reached_nodes: Dict[Evaluation, RelaxedNode],
+    action: ActionInstance,
+    subplans: Dict[ActionInstance, Tuple[ActionInstance, ...]],
+) -> Tuple[ActionInstance, ...]:
+    if action not in subplans:
+        plan = {}
+        for evaluation in get_preconditions(action):
+            parent_action = reached_nodes[evaluation].parent_action
+            if parent_action is not None:
+                plan.update(dict.fromkeys(default_subplan(reached_nodes, parent_action, subplans)))
+        plan[action] = None
+        subplans[action] = tuple(plan)
+    return subplans[action]
+
+
+def commit_action(action: Union[ActionInstance, Formula], context: RetraceContext) -> None:
+    context.selected.add(action)
+    for evaluation in get_preconditions(action):
+        context.values.setdefault(evaluation.term, evaluation.value)
 
 
 def retrace_relaxed_plan(
     reached_nodes: Dict[Evaluation, RelaxedNode],
     action: ActionInstance,
     achieved_evaluations: Optional[Set[Evaluation]] = None,
+    context: Optional[RetraceContext] = None,
 ) -> List[ActionInstance]:
     relaxed_plan = []
     achieved_evaluations = set(achieved_evaluations or set())
+    if context is None:
+        context = RetraceContext()
+        commit_action(action, context)
     preconditions = get_preconditions(action)
     for evaluation in preconditions:
         if evaluation in achieved_evaluations:
             continue
         assert reached_nodes[evaluation].reached, evaluation
-        parent_action = reached_nodes[evaluation].parent_action
+        node = reached_nodes[evaluation]
+        parent_action = node.parent_action
+        if len(node.parent_actions) > 1:
+            parent_action = min(
+                node.parent_actions,
+                key=lambda a: sum(
+                    context.values.get(e.term, e.value) != e.value
+                    for b in default_subplan(reached_nodes, a, context.subplans)
+                    if b not in context.selected
+                    for e in get_preconditions(b) + b.effect.simple_clause
+                ),
+            )
         if parent_action is not None:
+            commit_action(parent_action, context)
             for relaxed_action in retrace_relaxed_plan(
-                reached_nodes, parent_action, achieved_evaluations
+                reached_nodes, parent_action, achieved_evaluations, context
             ):
                 relaxed_plan.append(relaxed_action)
                 achieved_evaluations.update(relaxed_action.effect.simple_clause)
@@ -217,7 +279,12 @@ def retrace_relaxed_plan(
 
 
 def create_relaxed_plan_fn(
-    problem: ProblemABC, operation: ReduceFn = max, verbose: bool = False, **kwargs: Any
+    problem: ProblemABC,
+    operation: ReduceFn = max,
+    unit: bool = False,
+    makespan: bool = False,
+    verbose: bool = False,
+    **kwargs: Any,
 ) -> Callable[[State], Optional[Plan]]:
     problem = problem.instantiate()
 
@@ -229,7 +296,12 @@ def create_relaxed_plan_fn(
             return None, INF
         relaxed_plan = retrace_relaxed_plan(reached_nodes, goal)
         relaxed_plan = relaxed_plan[:-1]
-        cost = compute_relaxed_plan_cost(relaxed_plan)
+        if unit:
+            cost = get_length(relaxed_plan)
+        elif makespan:
+            cost = get_makespan(time_plan(relaxed_plan, ongoing=get_ongoing_actions(state)))
+        else:
+            cost = compute_relaxed_plan_cost(relaxed_plan)
 
         if verbose:
             print(

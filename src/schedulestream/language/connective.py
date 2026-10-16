@@ -18,7 +18,7 @@ from schedulestream.common.ordered_set import OrderedSet
 from schedulestream.common.utils import flatten, join_prefix, remove_duplicates
 from schedulestream.language.argument import Argument, Parameter, Parameters, RawConstant
 from schedulestream.language.expression import Expression, Formula
-from schedulestream.language.function import Evaluation
+from schedulestream.language.function import Evaluation, Function
 
 if TYPE_CHECKING:
     # NVIDIA
@@ -126,11 +126,27 @@ class Conjunction(Connective):
 And = Conjunction
 
 
+def filter_formulas(formulas: List[Formula]) -> List[Formula]:
+    """Drop vacuous Conjunction() formulas (e.g. left behind by remove_functions)."""
+    return [
+        formula
+        for formula in formulas
+        if not (isinstance(formula, Conjunction) and not formula.formulas)
+    ]
+
+
 class Sequence(Conjunction):
     def __init__(self, sequence: List[Formula]):
+        sequence = filter_formulas(sequence)
         assert sequence
         super().__init__(sequence[-1])
         self.sequence = sequence
+
+    def flatten(self) -> Formula:
+        return self
+
+    def remove_functions(self, functions: List[Function]) -> "Sequence":
+        return self.__class__([formula.remove_functions(functions) for formula in self.sequence])
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({self.sequence})"
@@ -138,14 +154,35 @@ class Sequence(Conjunction):
     __repr__ = __str__
 
 
-class CumulativeSequence(Sequence):
+class Cumulative(Sequence):
     def __init__(self, parts: List[Formula]):
+        parts = filter_formulas(parts)
         assert parts
         formulas = [parts[0]]
         for formula in parts[1:]:
             formulas.append(formulas[-1] & formula)
         super().__init__(formulas)
         self.parts = parts
+
+    def remove_functions(self, functions: List[Function]) -> "Cumulative":
+        return self.__class__([part.remove_functions(functions) for part in self.parts])
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}({self.parts})"
+
+    __repr__ = __str__
+
+
+class Serialized(Sequence):
+    def __init__(self, parts: List[Formula]):
+        parts = filter_formulas(parts)
+        assert parts
+        formulas = list(parts[:-1]) + [Conjunction(*parts)]
+        super().__init__(formulas)
+        self.parts = parts
+
+    def remove_functions(self, functions: List[Function]) -> "Serialized":
+        return self.__class__([part.remove_functions(functions) for part in self.parts])
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({self.parts})"

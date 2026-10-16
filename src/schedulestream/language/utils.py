@@ -17,6 +17,7 @@ from schedulestream.language.argument import wrap_argument
 from schedulestream.language.connective import Conjunction, Sequence
 from schedulestream.language.expression import Formula
 from schedulestream.language.function import Function, Term
+from schedulestream.language.predicate import Unreachable
 from schedulestream.language.state import State
 
 INTERNAL_PREFIX = "_"
@@ -48,7 +49,7 @@ def simplify_expression(expression, state: State, fluents: Optional[Set[Term]] =
 
 def simplify_conjunction(
     condition: Formula, state: State, fluents: Optional[Set[Term]] = None
-) -> Optional[Conjunction]:
+) -> Formula:
     if isinstance(condition, Sequence):
         return condition
     fluents = fluents or set()
@@ -59,5 +60,5 @@ def simplify_conjunction(
         elif set(evaluation.terms) & fluents:
             conjunction.append(evaluation)
         elif not evaluation.holds(state):
-            return None
+            return Unreachable()
     return Conjunction(*conjunction)

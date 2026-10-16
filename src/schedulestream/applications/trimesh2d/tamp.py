@@ -57,7 +57,7 @@ from schedulestream.common.utils import (
 )
 from schedulestream.language.action import Action
 from schedulestream.language.anonymous import rename_anonymous
-from schedulestream.language.connective import Conjunction, CumulativeSequence
+from schedulestream.language.connective import Conjunction, Cumulative
 from schedulestream.language.constraint import Constraint
 from schedulestream.language.durative import DurativeAction
 from schedulestream.language.expression import Formula
@@ -342,7 +342,7 @@ def create_goal(
 
     reset_goals = [RobotState(robot) == state.get_conf(robot) for robot in robots]
     reset_goal = Conjunction(*reset_goals)
-    return CumulativeSequence([goal, reset_goal])
+    return Cumulative([goal, reset_goal])
 
 
 def schedule_states(

@@ -8,13 +8,34 @@ disclosure or distribution of this material and related documentation
 without an express license agreement from NVIDIA CORPORATION or
 its affiliates is strictly prohibited.
 -->
-# cuStream
+# cuStream (deprecated)
 
 TAMP with [cuRobo](https://curobo.org/) collision and inverse kinematics primitives
 
-> **Note:** This example uses cuRoboV1, pinned to tag [v0.7.8](https://github.com/NVlabs/curobo/tree/v0.7.8).
+> **Deprecated:** This example uses cuRoboV1, pinned to tag [v0.7.8](https://github.com/NVlabs/curobo/tree/v0.7.8).
+> Superseded by [cuStream2](../custream2/), the recommended TAMP application.
 
 Installation and examples repeated from: [README](README.md)
+
+## Citation
+
+```bibtex
+@inproceedings{sundaralingam2023curobo,
+    title={CuRobo: Parallelized Collision-Free Robot Motion Generation},
+    author={Sundaralingam, Balakumar and Hari, Siva Kumar Sastry and Fishman, Adam and Garrett, Caelan and Van Wyk, Karl and Blukis, Valts and Millane, Alexander and Oleynikova, Helen and Handa, Ankur and Ramos, Fabio and others},
+    booktitle={IEEE International Conference on Robotics and Automation (ICRA)},
+    pages={8112--8119},
+    year={2023},
+    organization={IEEE}
+}
+
+@article{sundaralingam2023curobo_report,
+    title={cuRobo: Parallelized Collision-Free Minimum-Jerk Robot Motion Generation},
+    author={Sundaralingam, Balakumar and Hari, Siva Kumar Sastry and Fishman, Adam and Garrett, Caelan and Van Wyk, Karl and Blukis, Valts and Millane, Alexander and Oleynikova, Helen and Handa, Ankur and Ramos, Fabio and Ratliff, Nathan and Fox, Dieter},
+    journal={arXiv preprint arXiv:2310.17274},
+    year={2023}
+}
+```
 
 ## Installation
 

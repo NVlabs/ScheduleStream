@@ -34,10 +34,6 @@ class Anonymous:
     def __lt__(self, other: "Anonymous") -> bool:
         return self.name < other.name
 
-    @staticmethod
-    def reset() -> None:
-        Anonymous.counter.clear()
-
 
 def rename_anonymous(
     variables: Dict[str, Any], values: Optional[Set[Any]] = None

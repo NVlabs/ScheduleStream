@@ -12,6 +12,7 @@ from __future__ import annotations
 
 # Standard Library
 import os.path
+import tempfile
 import time
 from itertools import count
 from typing import TYPE_CHECKING, Any, Iterable, Iterator, Optional, Union
@@ -185,7 +186,7 @@ class WorldViewer:
             # Third Party
             from PIL import Image
 
-            image_path = "/tmp/image.png"
+            image_path = os.path.join(tempfile.gettempdir(), f"image-{os.getpid()}.png")
             self.visualizer._visualizer.capture_screen_image(image_path)
             image_pil = Image.open(image_path)
             image_np = np.array(image_pil)

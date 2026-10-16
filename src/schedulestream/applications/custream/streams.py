@@ -21,6 +21,7 @@ from curobo.types.math import Pose
 from curobo.types.state import JointState
 
 # NVIDIA
+from schedulestream.algorithm.llm import prompt_llm
 from schedulestream.applications.blocksworld.visualize import linear_curve
 from schedulestream.applications.custream.command import (
     ArmPath,
@@ -33,11 +34,17 @@ from schedulestream.applications.custream.command import (
 )
 from schedulestream.applications.custream.grasp import Grasp, grasp_generator
 from schedulestream.applications.custream.metrics import (
+    compute_ee_distance,
     compute_joint_distance,
     compute_linear_duration,
     compute_linear_durations,
+    compute_sphere_distance,
 )
-from schedulestream.applications.custream.placement import Placement, placement_generator
+from schedulestream.applications.custream.placement import (
+    Placement,
+    batch_placement_poses,
+    placement_generator,
+)
 from schedulestream.applications.custream.state import Configuration, State
 from schedulestream.applications.custream.utils import (
     concatenate_joint_states,
@@ -52,6 +59,7 @@ from schedulestream.applications.custream.world import World
 from schedulestream.common.utils import (
     EPSILON,
     INF,
+    SEPARATOR,
     batched,
     current_time,
     elapsed_time,
@@ -68,6 +76,28 @@ def grasp_stream(
     return grasp_generator(world, obj, arm=arm, **kwargs)
 
 
+def sort_placements(world: World, obj: str, positions: List[np.ndarray], prompt: str) -> List[int]:
+    print(SEPARATOR)
+    llm_prompt = (
+        "Write a Python function called `sort_placements` that takes `positions`, a list of [x, y,"
+        f" z] candidate positions for object {obj!r} in meters, and returns a list of indices in"
+        f" `positions` sorted in descending order by how well they satisfy prompt: {prompt!r}."
+        f" Return only the function definition, no explanation or markdown. {world.description()}"
+    )
+    print(f"\nPrompt:\n{llm_prompt}\nWaiting for LLM response...")
+
+    start_time = current_time()
+    llm_response = prompt_llm(llm_prompt)
+    print(f"\nResponse:\n{llm_response}\nElapsed: {elapsed_time(start_time):.3f} sec")
+
+    _llm_ns: dict = {}
+    exec(llm_response, _llm_ns)
+    _sort_placements = _llm_ns["sort_placements"]
+    print(SEPARATOR)
+
+    return _sort_placements(positions)
+
+
 def placement_stream(
     world: World,
     obj1: str,
@@ -80,8 +110,7 @@ def placement_stream(
     debug: bool = False,
     **kwargs: Any,
 ) -> Iterator[Placement]:
-    joint_state = world.to_joint_state(world.retract_conf.unsqueeze(0))
-    conf = Configuration(world, joint_state)
+    prompt = None
 
     fixed_names = set(world.obstacle_names) - {obj1, obj2} - set(placement2.objects)
     body1 = world.get_object(obj1)
@@ -92,16 +121,22 @@ def placement_stream(
     )
     for i in count():
         start_time = current_time()
-        local_placement_batch = next(local_placement_batches, None)
-        if local_placement_batch is None:
+        local_placements = next(local_placement_batches, None)
+        if local_placements is None:
             break
-        local_poses1 = Pose.cat([p.pose for p in local_placement_batch])
+        local_poses1 = Pose.cat([p.pose for p in local_placements])
         world_poses1 = multiply_poses(world_pose2, local_poses1)
+        world_positions1 = world.to_cpu(world_poses1.position).tolist()
+
         valid = torch.full([len(local_poses1)], True, device=world.device)
+        if prompt is not None:
+            indices = sort_placements(world, obj1, world_positions1, prompt)
+            valid[...] = False
+            valid[indices[:5]] = True
 
         if object_proximity is not None:
             world_spheres1 = transform_spheres(world_poses1, spheres_tensor)
-            with world.active_context(objects=None):
+            with world.active_context():
                 world.enable_objects_active(fixed_names)
                 distances = torch.min(-world.get_sphere_distances(world_spheres1), dim=1).values
                 valid &= distances >= object_proximity
@@ -122,8 +157,8 @@ def placement_stream(
             scene.show()
 
         for index in indices:
-            local_placement = local_placement_batch[index]
-            world_placement = local_placement.stack(placement2)
+            local_placement = local_placements[index]
+            world_placement = local_placement.stack(placement2, world_pose=world_poses1[index])
             if debug:
                 world_placement.scene().show()
             yield world_placement
@@ -253,23 +288,11 @@ def ik_stream(
     yield conf
 
 
-def pick_stream(
-    world: World,
-    batch_inputs: List[Tuple[str, Grasp, Placement, str]],
-    rest: bool = False,
-    collisions: bool = True,
-    **kwargs: Any,
-) -> List[Pair]:
-    objs, grasps, placements, arms = safe_zip(*batch_inputs)
-    [obj] = set(objs)
-    [arm] = set(arms)
-    tool_link = world.get_arm_link(arm)
-
+def compute_approach_batch(
+    world: World, arm: str, grasps: List[Grasp], placements: List[Placement]
+) -> List[ArmPath]:
     inverse_grasp_poses = Pose.cat([grasp.pose for grasp in grasps]).inverse()
-    parent_pose = placements[0].get_parent_pose()
-    placement_poses = multiply_poses(
-        parent_pose, Pose.cat([placement.pose for placement in placements])
-    )
+    placement_poses = batch_placement_poses(placements)
 
     tamp_config = world.tamp_config
     approach_distance = tamp_config.approach_link_distance + tamp_config.approach_object_distance
@@ -289,9 +312,31 @@ def pick_stream(
         state = State(world, attachments=[grasp])
         arm_path = ArmPath(world, arm, tool_pose, state=state)
         arm_paths.append(arm_path)
+    return arm_paths
 
-    with world.active_context(objects=None):
+
+def pick_stream(
+    world: World,
+    batch_inputs: List[Tuple[str, Grasp, Placement, str]],
+    collisions: bool = True,
+    **kwargs: Any,
+) -> List[Pair]:
+    tamp_config = world.tamp_config
+    rest_steps = tamp_config.approach_rest_steps
+    objs, grasps, placements, arms = safe_zip(*batch_inputs)
+
+    [obj] = set(objs)
+    [arm] = set(arms)
+    tool_link = world.get_arm_link(arm)
+    arm_paths = compute_approach_batch(world, arm, grasps, placements)
+
+    hand_links = world.get_hand_links(arm)
+    with world.active_context(), world.spheres_context():
         world.enable_objects_active(world.obstacle_names if collisions else [])
+        if tamp_config.approach_sphere_inflation is not None:
+            world.set_sphere_inflation(
+                inflation=tamp_config.approach_sphere_inflation, links=hand_links
+            )
         batch_trajectories = constrained_motion(world, arm, arm_paths, num=1, **kwargs)
     assert len(batch_trajectories) == len(arm_paths)
 
@@ -312,34 +357,39 @@ def pick_stream(
                 Attach(world, obj, tool_link),
                 traj.reverse(state=end_state),
             ]
-            if rest:
-                commands.insert(2, contact_conf.rest_trajectory(steps=20, state=start_state))
-                commands.insert(-1, contact_conf.rest_trajectory(steps=20, state=end_state))
+            if rest_steps != 0:
+                commands.insert(
+                    2, contact_conf.rest_trajectory(steps=rest_steps, state=start_state)
+                )
+                commands.insert(-1, contact_conf.rest_trajectory(steps=rest_steps, state=end_state))
             command = Commands(world, commands)
             output = Output(start_conf, end_conf, command)
             batch_pairs.append((batch_inputs[batch], output))
-    batch_pairs.sort(key=lambda pair: compute_retract_duration(world, pair[1][0].joint_state))
     return batch_pairs
 
 
 def place_stream(
     world: World,
     batch_inputs: List[Tuple[str, Grasp, Placement, str]],
-    rest: bool = False,
     collisions: bool = True,
     **kwargs: Any,
 ) -> List[Pair]:
+    tamp_config = world.tamp_config
+    rest_steps = tamp_config.approach_rest_steps
+
     objs, grasps, placements, arms = safe_zip(*batch_inputs)
     [obj] = set(objs)
     [arm] = set(arms)
     tool_link = world.get_arm_link(arm)
-    arm_paths = [
-        compute_approach(world, obj, grasp, placement, arm, **kwargs)
-        for grasp, placement in safe_zip(grasps, placements)
-    ]
+    arm_paths = compute_approach_batch(world, arm, grasps, placements)
 
-    with world.active_context(objects=None):
+    hand_links = world.get_hand_links(arm)
+    with world.active_context(), world.spheres_context():
         world.enable_objects_active(world.obstacle_names if collisions else [])
+        if tamp_config.approach_sphere_inflation is not None:
+            world.set_sphere_inflation(
+                inflation=tamp_config.approach_sphere_inflation, links=hand_links
+            )
         batch_trajectories = constrained_motion(world, arm, arm_paths, num=1, **kwargs)
     assert len(batch_trajectories) == len(arm_paths)
 
@@ -359,13 +409,14 @@ def place_stream(
                 Open(world, arm),
                 traj.reverse(state=end_state),
             ]
-            if rest:
-                commands.insert(1, contact_conf.rest_trajectory(steps=20, state=start_state))
-                commands.insert(-1, contact_conf.rest_trajectory(steps=20, state=end_state))
+            if rest_steps != 0:
+                commands.insert(
+                    1, contact_conf.rest_trajectory(steps=rest_steps, state=start_state)
+                )
+                commands.insert(-1, contact_conf.rest_trajectory(steps=rest_steps, state=end_state))
             command = Commands(world, commands)
             output = Output(start_conf, end_conf, command)
             batch_pairs.append((batch_inputs[batch], output))
-    batch_pairs.sort(key=lambda pair: compute_retract_duration(world, pair[1][0].joint_state))
     return batch_pairs
 
 
@@ -384,29 +435,36 @@ def motion_stream(
         grasps = set(conf1.grasps) & set(conf2.grasps)
         if grasps:
             [grasp] = grasps
-    state = State(world, attachments=[grasp] if grasp else [])
+
+    if linear:
+        state = State(world, attachments=[grasp] if grasp else [])
+        joint_state = concatenate_joint_states([conf1.joint_state, conf2.joint_state])
+        joint_state = interpolate_joint_state(world, joint_state)
+        return world.trajectory(joint_state, state=state)
+
+    initial_state = world.state()
+    attachments = []
     if obstacles is None:
         obstacles = world.obstacle_names
-
     if context is not None:
+        grasp = None
         for constraint in context.constraints:
             _, _, obj, pose = constraint.expression.term.unwrap_arguments()
             if pose is None:
                 continue
             if isinstance(pose, Placement):
+                attachments.append(pose)
                 obstacles.append(obj)
                 pose.set()
             elif isinstance(pose, Grasp):
-                grasp = pose
+                if pose.arm == arm:
+                    grasp = pose
+                    attachments.append(grasp)
             else:
                 raise NotImplementedError(pose)
+    state = State(world, attachments=attachments)
 
-    if linear:
-        joint_state = concatenate_joint_states([conf1.joint_state, conf2.joint_state])
-        joint_state = interpolate_joint_state(world, joint_state)
-        return world.trajectory(joint_state, state=state)
-
-    with world.active_context(objects=None):
+    with world.active_context():
         if grasp is not None:
             grasp.attach()
 
@@ -417,15 +475,25 @@ def motion_stream(
         )
         if grasp is not None:
             grasp.detach()
+    if context is not None:
+        initial_state.set()
 
     if joint_state is None:
         return None
     return world.trajectory(joint_state, state=state)
 
 
-def distance_function(arm: str, conf1: Configuration, conf2: Configuration) -> float:
+def distance_function(
+    world: World, arm: str, conf1: Configuration, conf2: Configuration, metric: str = "joint"
+) -> float:
     joint_state = concatenate_joint_states([conf1.joint_state, conf2.joint_state])
-    return compute_joint_distance(joint_state)
+    if metric == "joint":
+        return compute_joint_distance(joint_state)
+    if metric == "ee":
+        return compute_ee_distance(world, joint_state)
+    if metric == "sphere":
+        return compute_sphere_distance(world, joint_state)
+    raise NotImplementedError(metric)
 
 
 def duration_function(

@@ -376,12 +376,12 @@ def main() -> None:
         "-a", "--algorithm", type=str, default="lazy", choices=list(FINITE_ALGORITHMS)
     )
     parser.add_argument("-w", "--weight", type=float, default=INF)
-    parser.add_argument("-u", "--unit", action="store_true", help="TBD")
+    parser.add_argument("-u", "--unit", action="store_true", help="Use unit costs")
     parser.add_argument(
         "-s", "--seed", nargs="?", const=None, default=0, type=int, help="The random seed."
     )
     parser.add_argument("--profile", action="store_true", help="Enables profiling")
-    parser.add_argument("-v", "--video", default=None, type=str, help="TBD")
+    parser.add_argument("-v", "--video", default=None, type=str, help="Path to save a video")
     args = parser.parse_args()
     print("Args:", args)
 

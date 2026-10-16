@@ -9,7 +9,6 @@
 # its affiliates is strictly prohibited.
 #
 # Standard Library
-from functools import cache
 from typing import Any, Dict, FrozenSet, List, Optional
 
 # Third Party
@@ -27,6 +26,7 @@ from schedulestream.applications.trimesh2d.geometry import (
     pose_from_conf,
 )
 from schedulestream.applications.trimesh2d.utils import animate_scene, is_category
+from schedulestream.common.utils import instance_cache
 
 
 class World:
@@ -225,6 +225,6 @@ class State2D(State):
     def __init__(self, world: World2D, *args: Any, **kwargs: Any) -> None:
         super().__init__(world, *args, **kwargs)
 
-    @cache
+    @instance_cache
     def get_conf(self, frame: str) -> Position2:
         return conf_from_pose(self.get_pose(frame))

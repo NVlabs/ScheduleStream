@@ -14,6 +14,7 @@ from typing import Any, List, Optional
 
 # Third Party
 import numpy as np
+from curobo.types.math import Pose
 
 # NVIDIA
 from schedulestream.applications.custream.franka import load_franka_config
@@ -32,7 +33,7 @@ from schedulestream.applications.custream.yourdf import load_robot_yourdf
 CAMERA_POSE = create_pose(roll=3 * np.pi / 8, yaw=np.pi / 2)
 
 
-def create_circle_poses(num: int, distance: float):
+def create_circle_poses(num: int, distance: float) -> List[Pose]:
     yaws = [0.0, PI, -PI / 2, PI / 2]
     assert 0 <= num <= len(yaws)
 
@@ -45,7 +46,7 @@ def create_circle_poses(num: int, distance: float):
     return base_poses
 
 
-def create_line_poses(num: int, distance: float, **kwargs):
+def create_line_poses(num: int, distance: float, **kwargs: Any) -> List[Pose]:
     return [
         create_pose(y=y, **kwargs)
         for y in np.linspace(start=-distance / 2, stop=+distance / 2, num=num, endpoint=True)
@@ -65,7 +66,7 @@ def create_robot_objects(robot_config: dict) -> List[Object]:
     return objects
 
 
-def shrink_colliding_spheres(world: World, epsilon: float = 1e-1, debug: bool = True):
+def shrink_colliding_spheres(world: World, epsilon: float = 1e-1, debug: bool = True) -> None:
     distances = world.get_distances().squeeze(0)
     colliding = distances > 0.0
     distances[~colliding] = 0.0
@@ -188,4 +189,169 @@ def create_franka_line_world(
         world.set_joint_positions(world.get_arm_joints(arm), FRANKA_POSITIONS)
     world.set_camera_pose(CAMERA_POSE)
 
+    return world
+
+
+def create_franka_platforms_world(
+    num_platforms: int = 2,
+    num_objects: Optional[int] = None,
+    floor_size: float = 1.5,
+    platform_size: float = 0.1,
+    platform_height: float = 0.01,
+    object_width: float = 0.05,
+    **kwargs: Any,
+) -> World:
+    platform_signs = [
+        [+1, 0],
+        [-1, 0],
+        [0, +1],
+        [0, -1],
+        [+1, +1],
+        [-1, -1],
+        [+1, -1],
+        [-1, +1],
+    ]
+    assert num_platforms <= len(platform_signs)
+    if num_objects is None:
+        num_objects = num_platforms
+
+    robot_config = load_franka_config()
+
+    floor = CuboidObject(
+        name="floor",
+        width=floor_size,
+        height=0.1,
+        color="grey",
+        surface_config=SurfaceConfig(),
+    )
+    floor.place(bottom_pose=create_pose(z=-floor.height))
+
+    platform_poses = [
+        create_pose(
+            x=sx * (floor_size - platform_size) / 2, y=sy * (floor_size - platform_size) / 2
+        )
+        for sx, sy in platform_signs[:num_platforms]
+    ]
+    platforms = create_primitive_objects(
+        num_objects=num_platforms,
+        name="platform",
+        width=platform_size,
+        height=platform_height,
+        parent=floor,
+        poses=platform_poses,
+    )
+
+    cubes = create_primitive_objects(
+        num_objects=num_objects,
+        width=object_width,
+        grasp_config=GraspConfig(),
+    )
+    for i, cube in enumerate(cubes):
+        cube.stack(floor)
+
+    objects: List[Object] = [floor] + platforms + cubes
+    world = World(robot_config, objects, **kwargs)
+    for arm in world.arms:
+        world.set_joint_positions(world.get_arm_joints(arm), FRANKA_POSITIONS)
+    world.set_camera_pose(CAMERA_POSE)
+
+    return world
+
+
+def create_franka_shelf_world(
+    num_objects: int = 2,
+    floor_size: float = 1.0,
+    shelf_height: float = 0.15,
+    object_width: float = 0.05,
+    **kwargs: Any,
+) -> World:
+    """Single robot with a two-tier surface: low platform at floor level and an elevated shelf
+    on a riser. Objects are distributed across both levels, requiring the robot to reach
+    different heights."""
+    robot_config = load_franka_config()
+
+    floor = CuboidObject(
+        name="floor",
+        width=floor_size,
+        height=0.1,
+        color="grey",
+        surface_config=SurfaceConfig(),
+    )
+    floor.place(bottom_pose=create_pose(z=-floor.height))
+
+    riser = CuboidObject(name="riser", width=0.25, height=shelf_height, color="brown")
+    riser.place(bottom_pose=create_pose(x=0.3, z=0.0))
+
+    shelf = CuboidObject(
+        name="shelf",
+        width=0.3,
+        height=0.01,
+        color="black",
+        surface_config=SurfaceConfig(),
+    )
+    shelf.place(bottom_pose=create_pose(x=0.3, z=shelf_height))
+
+    low_platform = CuboidObject(
+        name="low_platform",
+        width=0.25,
+        height=0.01,
+        color="black",
+        surface_config=SurfaceConfig(),
+    )
+    low_platform.place(bottom_pose=create_pose(x=-0.3, z=0.0))
+
+    cubes = create_primitive_objects(
+        num_objects=num_objects, width=object_width, grasp_config=GraspConfig()
+    )
+    for cube in cubes:
+        cube.stack(low_platform)
+
+    objects: List[Object] = [floor, riser, shelf, low_platform] + cubes
+    world = World(robot_config, objects, **kwargs)
+    for arm in world.arms:
+        world.set_joint_positions(world.get_arm_joints(arm), FRANKA_POSITIONS)
+    world.set_camera_pose(CAMERA_POSE)
+    return world
+
+
+def create_franka_relay_world(
+    num_objects: int = 2,
+    distance: float = 1.0,
+    platform_width: float = 0.2,
+    object_width: float = 0.05,
+    **kwargs: Any,
+) -> World:
+    """Two robots positioned along the y-axis, each covering different ends of a three-platform
+    chain (start → mid → end). The spatial separation encourages multi-robot handoff planning."""
+    base_poses = create_line_poses(2, distance=distance)
+    robot_config = load_franka_config(base_poses)
+
+    platform_specs = [
+        ("start_platform", -distance / 2),
+        ("mid_platform", 0.0),
+        ("end_platform", +distance / 2),
+    ]
+    platforms: List[Object] = []
+    for name, y in platform_specs:
+        p = CuboidObject(
+            name=name,
+            width=platform_width,
+            height=0.01,
+            color="black",
+            surface_config=SurfaceConfig(),
+        )
+        p.place(bottom_pose=create_pose(x=0.5, y=y))
+        platforms.append(p)
+
+    cubes = create_primitive_objects(
+        num_objects=num_objects, width=object_width, grasp_config=GraspConfig()
+    )
+    for i, cube in enumerate(cubes):
+        cube.stack(platforms[0] if i % 2 == 0 else platforms[2])
+
+    objects: List[Object] = platforms + cubes
+    world = World(robot_config, objects, **kwargs)
+    for arm in world.arms:
+        world.set_joint_positions(world.get_arm_joints(arm), FRANKA_POSITIONS)
+    world.set_camera_pose(CAMERA_POSE)
     return world

@@ -16,6 +16,7 @@ import argparse
 import copy
 import math
 import os
+import tempfile
 from typing import Annotated, Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
 
 # Third Party
@@ -25,7 +26,6 @@ import trimesh
 from yourdfpy import URDF, Joint, Limit, Link, Robot
 
 # NVIDIA
-from schedulestream.applications.custream.utils import PI
 from schedulestream.common.graph import get_reachable
 from schedulestream.common.utils import (
     compute_mapping,
@@ -162,6 +162,12 @@ class Yourdf(URDF):
         assert joint in self.joint_map, (joint, list(self.joint_map))
         return self.joint_map[joint].child
 
+    def get_joint_transform(self, joint: str) -> np.ndarray:
+        """Return the joint's child pose relative to its parent link at the current scene state."""
+        return self.get_transform(
+            self.get_joint_child(joint), frame_from=self.get_joint_parent(joint)
+        )
+
     @property
     def parent_from_link(self) -> Dict[str, str]:
         return {joint.child: joint.name for joint in self.robot.joints}
@@ -178,6 +184,14 @@ class Yourdf(URDF):
 
     def get_link_children(self, link: str) -> List[str]:
         return self.children_from_link.get(link, [])
+
+    def get_link_joints(self, links: List[str], fixed: bool = False) -> List[str]:
+        return [
+            joint
+            for link in links
+            if (joint := self.get_link_parent(link)) is not None
+            and (fixed or not self.is_fixed(joint))
+        ]
 
     def get_link_ancestors(self, link: str) -> List[str]:
         joint = self.get_link_parent(link)
@@ -196,6 +210,10 @@ class Yourdf(URDF):
 
     def get_link_subtree(self, link: str) -> List[str]:
         return [link] + self.get_link_descendants(link)
+
+    def get_preorder_links(self) -> List[str]:
+        """Return all links in preorder (depth-first) starting from the root link."""
+        return self.get_link_subtree(self.root_link)
 
     def get_active_links(
         self, joints: Optional[List[str]] = None, include_roots: bool = True
@@ -223,8 +241,26 @@ class Yourdf(URDF):
         yield joint
         yield from self.get_joint_chain(child_link)
 
+    def get_arm_chains(self, min_joints: int = 5, max_arms: Optional[int] = 2) -> List[List[str]]:
+        """Return per-arm joint chains, longest first.
+
+        Uses :meth:`get_chains` (link clusters connected by chain joints); each chain's joints are
+        the parent joints of its links (a joint is in the chain whenever its child link is). Keeps
+        chains with at least ``min_joints`` joints and returns the top ``max_arms`` (most joints).
+        """
+        chains = [
+            joints
+            for chain in self.get_chains()
+            if len(joints := self.get_link_joints(chain)) >= min_joints
+        ]
+        chains.sort(key=len, reverse=True)
+        if max_arms is not None:
+            chains = chains[:max_arms]
+        return chains
+
     def get_arm_joints(self, **kwargs: Any) -> List[str]:
-        return list(self.get_joint_chain(**kwargs))
+        """Return the joints of the longest serial link-chains ("arms"), concatenated."""
+        return [joint for chain in self.get_arm_chains(**kwargs) for joint in chain]
 
     def get_gripper_joints(self, **kwargs: Any) -> List[str]:
         arm_joints = self.get_arm_joints(**kwargs)
@@ -240,13 +276,11 @@ class Yourdf(URDF):
         return list(filter(negate_test(arm_joints.__contains__), active_joints))
 
     def get_tool_links(self, **kwargs: Any) -> List[str]:
-        arm_joints = self.get_arm_joints(**kwargs)
-        if not arm_joints:
-            return []
-        child_link = self.get_joint_child(arm_joints[-1])
-        return [
-            link for link in self.get_link_cluster(child_link) if not self.get_link_children(link)
-        ]
+        tool_links = []
+        for chain in self.get_arm_chains(**kwargs):
+            child_link = self.get_joint_child(chain[-1])
+            tool_links.extend(link for link in self.get_link_cluster(child_link))
+        return tool_links
 
     def get_active_joints(self, link: str) -> List[str]:
         ancestor_links = self.get_link_ancestors(link) + [link]
@@ -278,6 +312,41 @@ class Yourdf(URDF):
                 clustered_links.update(cluster)
         return clusters
 
+    def get_chain_joints(self, **kwargs: Any) -> List[str]:
+        """Return the child joint of every rigid link-cluster that has a single child.
+
+        Clusters the links by rigid (fixed-joint) connectivity, then for each cluster gathers the
+        joints leaving it (parent link inside the cluster, child link outside -- i.e. the movable
+        joints to child clusters). A cluster with exactly one such joint continues a non-branching
+        serial chain, so that joint is a chain joint.
+        """
+        chain_joints = []
+        for cluster in self.get_link_clusters(**kwargs):
+            cluster_links = set(cluster)
+            child_joints = [
+                joint
+                for link in cluster
+                for joint in self.get_link_children(link)
+                if self.get_joint_child(joint) not in cluster_links
+            ]
+            if len(child_joints) == 1:
+                chain_joints.extend(child_joints)
+        return chain_joints
+
+    def get_chains(self) -> List[List[str]]:
+        """Return the link clusters connected by the chain joints (:meth:`get_chain_joints`).
+
+        Each cluster's links are ordered by preorder from the root; clusters are ordered largest
+        to smallest.
+        """
+        chain_edges = list(map(self.get_joint_edge, self.get_chain_joints())) + self.rigid_edges
+        order = {link: i for i, link in enumerate(self.get_preorder_links())}
+        clusters = [
+            sorted(cluster, key=lambda link: order.get(link, len(order)))
+            for cluster in self.get_link_clusters(edges=chain_edges)
+        ]
+        return sorted(clusters, key=len, reverse=True)
+
     @property
     def node_edges(self) -> List[Tuple[str, str]]:
         movable_joints = list(filter(negate_test(self.is_fixed), self.all_joints))
@@ -304,6 +373,39 @@ class Yourdf(URDF):
         if limit.upper is None:
             return +math.inf
         return limit.upper
+
+    def get_joint_velocity(self, joint: str) -> float:
+        limit = self.joint_map[joint].limit
+        if limit is None:
+            return math.inf
+        if limit.velocity is None:
+            return math.inf
+        return limit.velocity
+
+    def get_joint_velocities(self, joints: Optional[List[str]] = None) -> Conf:
+        if joints is None:
+            joints = self.joints
+        return [self.get_joint_velocity(joint) for joint in joints]
+
+    def set_joint_velocity(self, joint: str, velocity: float) -> None:
+        limit = self.joint_map[joint].limit
+        if limit is None:
+            limit = Limit()
+            self.joint_map[joint].limit = limit
+        limit.velocity = velocity
+
+    def set_joint_velocities(
+        self, joints: Optional[List[str]] = None, velocities: Optional[Conf] = None
+    ) -> Dict[str, float]:
+        if velocities is None:
+            return {}
+        if joints is None:
+            joints = self.joints
+        assert len(joints) == len(velocities), (len(joints), len(velocities))
+        joint_velocities = compute_mapping(joints, velocities)
+        for joint, velocity in joint_velocities.items():
+            self.set_joint_velocity(joint, velocity)
+        return joint_velocities
 
     def get_joint_bound(self, joint: str) -> Tuple[float, float]:
         lower = self.get_joint_lower(joint)
@@ -434,11 +536,11 @@ class Yourdf(URDF):
     def dump(self, joints: Optional[List[str]] = None) -> None:
         if joints is None:
             joints = self.joints
-        print(f"Robot: {self.name}")
-        print(f"Base link: {self.base_link}")
+        print(f"Robot: {self.name} | Base link: {self.base_link}")
         print(f"Links ({len(self.links)}): {self.links}")
         print(f"Tool links ({len(self.get_tool_links())}): {self.get_tool_links()}")
         print(f"Arm joints ({len(self.get_arm_joints())}): {self.get_arm_joints()}")
+        print(f"Gripper joints ({len(self.get_gripper_joints())}): {self.get_gripper_joints()}")
         for joint in joints:
             lower, upper = self.get_joint_bound(joint)
             print(
@@ -475,12 +577,18 @@ class Yourdf(URDF):
         )
         self.update()
 
+    def add_frame_geometry(self, frame: str, length: float = 0.1) -> trimesh.Trimesh:
+        geometry = trimesh.creation.axis(
+            origin_size=length * 0.1, axis_radius=length * 0.05, axis_length=length * 1.0
+        )
+        self.scene.add_geometry(geometry, parent_node_name=frame)
+
     def export(self, urdf_path: Optional[str] = None) -> str:
         if urdf_path is None:
             dir_name, _ = os.path.splitext(os.path.basename(__file__))
-            temp_dir = f"/tmp/{dir_name}"
+            temp_dir = os.path.join(tempfile.gettempdir(), dir_name)
             os.makedirs(temp_dir, exist_ok=True)
-            file_name = f"{self.name}.urdf"
+            file_name = f"{self.name}-{os.getpid()}.urdf"
             urdf_path = os.path.abspath(os.path.join(temp_dir, file_name))
 
         self.write_xml_file(urdf_path)
@@ -585,7 +693,7 @@ def add_base_dofs(
     dofs: Optional[Tuple[str]] = ("x", "y", "yaw"),
     dof_limits: Optional[Dict[str, float]] = None,
     linear_velocity: float = 1.0,
-    angular_velocity: float = PI / 2,
+    angular_velocity: float = math.pi / 2,
     effort: float = 1e3,
 ) -> List[str]:
     dof_limits = dof_limits or {}

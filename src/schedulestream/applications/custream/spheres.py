@@ -19,23 +19,21 @@ import traceback
 import zlib
 from collections import defaultdict
 from heapq import heappop, heappush
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 # Third Party
 import numpy as np
 import torch
 import trimesh
-from curobo.geom.types import Obstacle, Sphere
-from curobo.util_file import load_yaml, write_yaml
 
 # NVIDIA
-from schedulestream.applications.custream.config import get_active_links, get_gripper_links
+from schedulestream.applications.custream.config import get_active_links
 from schedulestream.applications.custream.utils import (
-    Vector,
+    add_obstacles,
     create_pose,
+    create_sphere_obstacles,
     matrix_from_pose,
     numpy_random_context,
-    pose_from_pos_quat,
     set_seed,
     to_cpu,
     to_pose,
@@ -46,28 +44,17 @@ from schedulestream.common.utils import (
     INF,
     current_time,
     elapsed_time,
-    random_context,
+    load_yaml,
     remove_path,
     safe_zip,
+    write_yaml,
 )
 
 CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "cache"))
 
 GREEN = (0, 255, 0, 100)
 
-
-def create_sphere_obstacles(
-    points: List[Vector], radii: List[float], **kwargs: Any
-) -> List[Sphere]:
-    return [
-        Sphere(
-            name=f"sphere{i}" + str(i),
-            pose=pose_from_pos_quat(point).tolist(),
-            radius=radius,
-            **kwargs,
-        )
-        for i, (point, radius) in enumerate(zip(points, radii))
-    ]
+INACTIVE_RADIUS = -10.0
 
 
 def add_sphere(
@@ -92,14 +79,17 @@ def add_sphere(
 def add_spheres(
     spheres: torch.Tensor,
     scene: Optional[trimesh.Scene] = None,
-    colors: List[Tuple[int]] = (GREEN,),
+    colors: Union[Tuple[int], List[Tuple[int]]] = GREEN,
     **kwargs: Any,
 ) -> trimesh.Scene:
     if scene is None:
         scene = trimesh.Scene()
     spheres = to_cpu(torch.flatten(spheres, end_dim=-2))
-    if len(colors) == 1:
-        colors = len(spheres) * colors
+    colors = np.asarray(colors)
+    if colors.ndim == 1:
+        colors = colors[None, :]
+    if colors.shape[0] == 1:
+        colors = np.tile(colors, (len(spheres), 1))
     for sphere, color in safe_zip(spheres, colors):
         x, y, z, radius = sphere
         if radius <= 0.0:
@@ -126,23 +116,15 @@ def add_cloud(
     return scene
 
 
-def add_obstacles(
-    obstacles: List[Obstacle], scene: Optional[trimesh.Scene] = None
-) -> trimesh.Scene:
-    if scene is None:
-        scene = trimesh.Scene()
-    for sphere in obstacles:
-        scene.add_geometry(sphere.get_trimesh_mesh(), transform=sphere.get_transform_matrix())
-    return scene
-
-
 def greedy_sample_mesh(
     mesh: trimesh.Trimesh,
     n_spheres: int = 50,
     sphere_radius: float = 1e-2,
+    max_radius: float = INF,
     n_candidates: int = 200,
     n_surface: int = 1000,
     tangent: bool = True,
+    convexify: bool = False,
     display: bool = False,
     verbose: bool = False,
 ) -> Tuple[np.array, List[float], List[float]]:
@@ -154,7 +136,7 @@ def greedy_sample_mesh(
 
     surface_area = mesh.area
     if tangent:
-        if not mesh.is_watertight:
+        if convexify or not mesh.is_watertight:
             mesh = mesh.convex_hull
         candidates = points[:n_candidates]
         try:
@@ -163,6 +145,7 @@ def greedy_sample_mesh(
             traceback.print_exc()
             return [], [], []
         radii += sphere_radius
+        radii = np.minimum(radii, max_radius)
     else:
         centers = points[:n_candidates]
         radii = sphere_radius * np.ones(len(centers))
@@ -282,7 +265,7 @@ def buffer_spheres(kinematics: dict, buffer: float, min_radius: float = 0.0) -> 
             if new_radius < min_radius:
                 continue
             if new_radius <= 0.0:
-                new_radius = -10.0
+                new_radius = INACTIVE_RADIUS
             new_sphere = dict(sphere)
             new_sphere["radius"] = new_radius
             collision_spheres.setdefault(link, []).append(new_sphere)
@@ -370,10 +353,6 @@ def load_spheres(
         collision_spheres = load_yaml(sphere_path)
         print("Loaded:", sphere_path)
 
-    print(
-        f"Collision links ({len(kinematics['collision_link_names'])}):"
-        f" {kinematics['collision_link_names']}"
-    )
     for link in list(kinematics["collision_link_names"]):
         if (link in ignore_links) or (link not in collision_spheres):
             collision_spheres[link] = []
@@ -391,12 +370,32 @@ def load_spheres(
             for link, spheres in sorted(
                 collision_spheres.items(), key=lambda pair: len(pair[1]), reverse=True
             )
+            if spheres
         },
     )
 
     kinematics["collision_spheres"] = collision_spheres
     kinematics["collision_link_names"] = list(collision_spheres)
     return kinematics["collision_spheres"]
+
+
+def set_sphere_inflation(
+    robot_config: dict,
+    links: Optional[Iterable[str]] = None,
+    inflation: float = 1e-3,
+) -> None:
+    kinematics = robot_config["robot_cfg"]["kinematics"]
+    collision_spheres = kinematics.get("collision_spheres", {})
+    target_links = set(collision_spheres if links is None else links)
+    for link, spheres in collision_spheres.items():
+        if link not in target_links or not spheres:
+            continue
+        for sphere in spheres:
+            new_radius = sphere["radius"] - sphere["inflation"] + inflation
+            if new_radius <= 0.0:
+                new_radius = INACTIVE_RADIUS
+            sphere["radius"] = new_radius
+            sphere["inflation"] = inflation
 
 
 def main() -> None:

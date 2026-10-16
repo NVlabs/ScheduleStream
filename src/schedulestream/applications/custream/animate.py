@@ -105,6 +105,25 @@ def extract_timed_commands(
     return combine_timed_commands(world, timed_commands)
 
 
+def states_iterator(states: List[State], steps_per_state: int = 1) -> Iterator[None]:
+    for state in states:
+        state.set()
+        for _ in range(steps_per_state):
+            yield
+
+
+def animate_states(
+    states: List[State],
+    steps_per_state: int = 10,
+    **kwargs: Any,
+) -> List[bytes]:
+    if not states:
+        return []
+    world = states[0].world
+    iterator = states_iterator(states, steps_per_state)
+    return animate_scene(world.scene, iterator, **kwargs)
+
+
 def animate_commands(
     state: State,
     commands: Optional[Commands],

@@ -12,7 +12,7 @@
 from dataclasses import dataclass
 from functools import cache, cached_property
 from itertools import cycle
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 # Third Party
 import numpy as np
@@ -23,15 +23,14 @@ from curobo.types.math import Pose
 
 # NVIDIA
 from schedulestream.applications.custream.bounding import BoundingBox
-from schedulestream.applications.custream.spheres import (
-    add_obstacles,
-    create_sphere_obstacles,
-    greedy_sample_mesh,
-)
+from schedulestream.applications.custream.spheres import greedy_sample_mesh
 from schedulestream.applications.custream.utils import (
     Color,
+    add_obstacles,
+    create_sphere_obstacles,
     multiply_poses,
     pose_from_pos_quat,
+    position_from_pose,
     to_cpu,
     to_float_color,
     to_matrix,
@@ -50,6 +49,7 @@ class GraspConfig:
     top_offset: float = INF
     max_grasps: float = INF
     reverse: float = False
+    generator: Optional[Iterator[Pose]] = None
 
 
 @dataclass
@@ -330,6 +330,16 @@ class Object:
             )
         mesh = obstacle.get_trimesh_mesh()
         return MeshObject(name=obstacle.name, mesh=mesh, pose=obstacle.pose, **kwargs)
+
+    def description(self) -> str:
+        position = position_from_pose(self.get_pose())
+        bounding_box = self.get_bounding_box()
+        return (
+            f"Object: {self.name} | Movable: {self.movable} | Color (RGB): {self.main_color[:3]} |"
+            f" Dimensions (m): {np.round(self.dimensions, 2)} | Position (m):"
+            f" {np.round(position, 2)} | Lower Corner (m): {np.round(bounding_box.lower, 2)} |"
+            f" Upper Corner (m): {np.round(bounding_box.upper, 2)}"
+        )
 
     def __eq__(self, other: Any) -> bool:
         return type(self) == type(other) and id(self) == id(other)

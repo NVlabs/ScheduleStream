@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Union
 
 # NVIDIA
 from schedulestream.common.utils import EPSILON, INF, not_null
-from schedulestream.language.action import Action, ActionInstance
+from schedulestream.language.action import DEFAULT_COST, Action, ActionInstance
 from schedulestream.language.argument import (
     Argument,
     Constant,
@@ -196,7 +196,7 @@ class DurativeAction(Action):
         end_effect: InputFormula = None,
         min_duration: Union[float, Expression] = 1.0,
         max_duration: Union[float, Expression] = INF,
-        cost: Union[float, Expression] = 0.0,
+        cost: Union[float, Expression] = DEFAULT_COST,
         **kwargs: Any,
     ):
         self.start_condition = create_formula(start_condition)
@@ -221,6 +221,19 @@ class DurativeAction(Action):
             effect=effect,
             cost=cost,
             **kwargs,
+        )
+
+    def instantaneous(self) -> Action:
+        """Return an instantaneous Action with this action's combined
+        precondition and effect (dropping the durative semantics)."""
+        return Action(
+            parameters=self.typed_parameters,
+            precondition=self.start_condition & self.over_condition & self.end_condition,
+            effect=self.effect,
+            cost=self.cost,
+            language=self.language,
+            name=self.name,
+            parent=self,
         )
 
     def _instantiate(self, arguments: List[Any]) -> "DurativeInstance":
@@ -266,6 +279,13 @@ class DurativeAction(Action):
     def actions(self) -> List[Action]:
         return [self.start_action, self.end_action]
 
+    def add_applied_effect(self, parameters: Optional[List[Parameter]]) -> Predicate:
+        atom = self.applied_atom(parameters)
+        if atom is not None:
+            self.effect = Conjunction(self.effect, atom)
+            self.end_effect = Conjunction(self.end_effect, atom)
+        return self.applied_predicate(parameters)
+
     def remove_conditions(self, functions: List[Function]) -> "DurativeAction":
         return self.__class__(
             name=self.name,
@@ -280,22 +300,61 @@ class DurativeAction(Action):
             cost=self.cost,
         )
 
+    def dump(self):
+        print(
+            f"{self.__class__.__name__}(\n"
+            f" name={self.name},\n"
+            f" arguments={self.parameters},\n"
+            f" start_condition={self.start_condition},\n"
+            f" start_effect={self.start_effect},\n"
+            f" over_condition={self.over_condition},\n"
+            f" end_condition={self.end_condition},\n"
+            f" end_effect={self.end_effect},\n"
+            f" duration=[{self.min_duration}, {self.max_duration}],\n"
+            f" cost={self.cost})"
+        )
+
 
 class DurativeInstance(ActionInstance):
-    def __init__(self, action: DurativeAction, arguments: List[Any], **kwargs: Any) -> None:
-        super().__init__(action, arguments, **kwargs)
+    @cached_property
+    def start_condition(self) -> Conjunction:
+        return self.action.start_condition.bind(self.parameter_values)
 
-        self.start_condition = action.start_condition.bind(self.parameter_values)
-        self.start_effect = action.start_effect.bind(self.parameter_values)
-        self.over_condition = action.over_condition.bind(self.parameter_values)
-        self.end_condition = action.end_condition.bind(self.parameter_values)
-        self.end_effect = action.end_effect.bind(self.parameter_values)
-        self.min_duration = action.min_duration.bind(self.parameter_values)
-        self.max_duration = action.max_duration.bind(self.parameter_values)
+    @cached_property
+    def start_effect(self) -> Conjunction:
+        return self.action.start_effect.bind(self.parameter_values)
 
-        self.start_instance = StartInstance(self)
-        self.over_instance = OverInstance(self)
-        self.end_instance = EndInstance(self)
+    @cached_property
+    def over_condition(self) -> Conjunction:
+        return self.action.over_condition.bind(self.parameter_values)
+
+    @cached_property
+    def end_condition(self) -> Conjunction:
+        return self.action.end_condition.bind(self.parameter_values)
+
+    @cached_property
+    def end_effect(self) -> Conjunction:
+        return self.action.end_effect.bind(self.parameter_values)
+
+    @cached_property
+    def min_duration(self) -> Expression:
+        return self.action.min_duration.bind(self.parameter_values)
+
+    @cached_property
+    def max_duration(self) -> Expression:
+        return self.action.max_duration.bind(self.parameter_values)
+
+    @cached_property
+    def start_instance(self) -> "StartInstance":
+        return StartInstance(self)
+
+    @cached_property
+    def over_instance(self) -> "OverInstance":
+        return OverInstance(self)
+
+    @cached_property
+    def end_instance(self) -> "EndInstance":
+        return EndInstance(self)
 
     @property
     def start_action(self) -> StartAction:

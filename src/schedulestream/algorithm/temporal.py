@@ -10,15 +10,15 @@
 #
 # Standard Library
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 # NVIDIA
 from schedulestream.algorithm.utils import PartialPlan, Plan, Solution, compute_partial_orders
 from schedulestream.common.graph import get_ancestors, get_descendants
 from schedulestream.common.utils import INF, flatten, merge_dicts
-from schedulestream.language.action import ActionInstance
+from schedulestream.language.action import ActionInstance, GoalAction
 from schedulestream.language.connective import Conjunction
 from schedulestream.language.durative import (
     CLOCK,
@@ -73,11 +73,18 @@ def sequential_from_temporal(
     )
 
 
-def time_plan(plan: Optional[Plan], epsilon: float = CLOCK) -> Optional[TimedPlan]:
+def time_plan(
+    plan: Optional[Plan],
+    epsilon: float = CLOCK,
+    ongoing: Optional[Dict[DurativeInstance, float]] = None,
+) -> Optional[TimedPlan]:
     if plan is None:
         return None
     timed_plan = []
-    start_times = {}
+    start_times = {
+        instance: remaining - instance.min_duration.evaluate()
+        for instance, remaining in (ongoing or {}).items()
+    }
     current_time = 0.0
     for i, instance in enumerate(plan):
         if isinstance(instance, StartInstance):
@@ -142,6 +149,21 @@ def serialize_plan(sequential_plan: Optional[Plan]) -> Optional[Plan]:
     return list(flatten(action.instances for action in sequential_plan))
 
 
+def distinct_plan(timed_plan: Optional[TimedPlan]) -> Optional[TimedPlan]:
+    """Clone repeated action instances so each occurrence is a distinct node."""
+    if timed_plan is None:
+        return None
+    seen = set()
+    distinct = []
+    for timed_action in timed_plan:
+        action = timed_action.action
+        if action in seen:
+            action = action.clone()
+        seen.add(action)
+        distinct.append(replace(timed_action, action=action))
+    return distinct
+
+
 def actions_from_timed(timed_plan: Optional[TimedPlan]) -> Optional[LinearPlan]:
     if timed_plan is None:
         return None
@@ -204,6 +226,14 @@ def get_makespan(plan: Optional[TimedPlan]) -> float:
     return max(timed_action.end for timed_action in plan)
 
 
+def is_linear(plan: Optional[TimedPlan]) -> bool:
+    """Return True when no two timed actions overlap (boundary contact allowed)."""
+    if plan is None:
+        return True
+    intervals = sorted((timed_action.start, timed_action.end) for timed_action in plan)
+    return all(prev[1] <= nxt[0] for prev, nxt in zip(intervals, intervals[1:]))
+
+
 @dataclass
 class TemporalSolution(Solution):
     plan: Optional[TimedPlan] = None
@@ -221,8 +251,25 @@ class TemporalSolution(Solution):
         return self.makespan
 
     @property
-    def score(self) -> float:
-        return self.makespan + self.cost
+    def is_linear(self) -> bool:
+        return is_linear(self.plan)
+
+    @property
+    def filtered_plan(self) -> Optional[TimedPlan]:
+        """Return :attr:`plan` with GoalAction instances (added to compile Disjunction goals) removed.
+        """
+        if self.plan is None:
+            return None
+        return [
+            timed_action
+            for timed_action in self.plan
+            if not isinstance(timed_action.action.lifted, GoalAction)
+        ]
+
+    def metric(self, makespan_weight: float) -> float:
+        if not makespan_weight:
+            return self.cost
+        return makespan_weight * self.makespan + self.cost
 
     @property
     def linear_plan(self) -> Optional[LinearPlan]:

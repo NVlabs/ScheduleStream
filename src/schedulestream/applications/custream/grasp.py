@@ -53,6 +53,14 @@ class Grasp(Attachment):
         return self.world.get_object(self.obj)
 
     @property
+    def link(self) -> str:
+        return self.parent
+
+    @property
+    def arm(self) -> str:
+        return self.world.get_link_arm(self.link)
+
+    @property
     def spheres(self) -> torch.Tensor:
         return self.body.get_spheres_tensor()
 
@@ -61,19 +69,32 @@ class Grasp(Attachment):
             create_pose(z=link_distance), self.pose, create_pose(z=object_distance).inverse()
         )
 
-    def get_object_pose(self, link_pose: Pose, **kwargs: Any) -> Pose:
+    def get_link_pose(self, obj_pose: Optional[Pose] = None, **kwargs: Any) -> Pose:
+        if obj_pose is None:
+            obj_pose = self.world.get_object_pose(self.obj)
+        pose = self.get_approach_pose(**kwargs)
+        return multiply_poses(obj_pose, pose.inverse())
+
+    def get_object_pose(self, link_pose: Optional[Pose] = None, **kwargs: Any) -> Pose:
+        if link_pose is None:
+            link_pose = self.world.get_link_pose(self.link)
         pose = self.get_approach_pose(**kwargs)
         return multiply_poses(link_pose, pose)
 
-    def get_link_pose(self, obj_pose: Pose, **kwargs: Any) -> Pose:
-        pose = self.get_approach_pose(**kwargs)
-        return multiply_poses(obj_pose, pose.inverse())
+    def set_object_pose(self, **kwargs: Any) -> Pose:
+        pose = self.get_object_pose(**kwargs)
+        self.world.set_object_pose(self.obj, pose)
+        return pose
 
     def attach(self) -> None:
         self.world.attach_object(self.obj, self.parent, grasp_pose=self.pose, attach=True)
 
     def detach(self) -> None:
         self.world.detach_objects(links=[self.parent], detach=True)
+
+    def reverse(self, roll: float = PI) -> "Grasp":
+        pose = multiply_poses(self.pose, create_pose(roll=roll))
+        return Grasp(self.world, self.obj, pose, self.link)
 
     def __str__(self):
         prefix = self.__class__.__name__[0].lower()
@@ -210,7 +231,11 @@ def handover_grasp_generator(
 
 
 def grasp_generator(
-    world: World, obj: Union[str, Object], arm: Optional[str] = None, **kwargs: Any
+    world: World,
+    obj: Union[str, Object],
+    arm: Optional[str] = None,
+    debug: bool = False,
+    **kwargs: Any,
 ) -> Iterator[Grasp]:
     if arm is None:
         arm = world.arms[0]
@@ -220,10 +245,29 @@ def grasp_generator(
     grasp_config = obj.grasp_config
     if grasp_config is None:
         grasp_config = GraspConfig()
+    if grasp_config.generator is not None:
+        for grasp_pose in grasp_config.generator:
+            grasp = Grasp(world, obj.name, grasp_pose, link)
+            if debug:
+                grasp.set_object_pose()
+                world.show()
+                continue
+            yield grasp
+            if grasp_config.reverse:
+                yield grasp.reverse()
+        return
+
     primitive = grasp_config.primitive
     if primitive is None:
         primitive = obj.primitive
     assert primitive is not None
+
+    if primitive.lower() == "graspgen":
+        # NVIDIA
+        from schedulestream.applications.custream.internal.grasp_gen import grasp_gen_generator
+
+        yield from grasp_gen_generator(world, obj)
+        return
 
     bounding_box = obj.bounding_box
     dimensions = bounding_box.dimensions
@@ -235,11 +279,11 @@ def grasp_generator(
         **kwargs,
     )
     for grasp_pose in take(grasp_poses, n=grasp_config.max_grasps):
-        grasp_pose = multiply_poses(bounding_box.pose, grasp_pose)
-        yield Grasp(world, obj.name, grasp_pose, link)
+        grasp_pose = multiply_poses(bounding_box.pose.inverse(), grasp_pose)
+        grasp = Grasp(world, obj.name, grasp_pose, link)
+        yield grasp
         if grasp_config.reverse:
-            grasp_pose = multiply_poses(grasp_pose, create_pose(roll=PI))
-            yield Grasp(world, obj.name, grasp_pose, link)
+            yield grasp.reverse()
 
 
 def gripper_step_sizes(world: World, arm: str, num_steps: int = 20) -> np.ndarray:

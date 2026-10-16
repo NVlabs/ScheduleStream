@@ -21,15 +21,17 @@ from schedulestream.applications.custream.state import State
 from schedulestream.applications.custream.streams import grasp_stream, pick_stream, placement_stream
 from schedulestream.applications.custream.utils import set_seed, to_matrix
 from schedulestream.applications.custream.world import World
-from schedulestream.common.utils import current_time, elapsed_time, flatten, remove_duplicates
+from schedulestream.common.utils import INF, current_time, elapsed_time, flatten, remove_duplicates
 from schedulestream.language.constraint import Constraint
-from schedulestream.language.generator import from_gen_fn, from_unary_gen_fn
+from schedulestream.language.generator import batch_list_gen_fn, from_unary_gen_fn
 from schedulestream.language.predicate import Predicate
 from schedulestream.language.stream import StreamOutput
 
 
 def create_reachability_streams(
-    world: World, placements: Dict[str, Placement], object_names: Optional[List[str]] = None
+    world: World,
+    placements: Dict[str, Placement],
+    object_names: Optional[List[str]] = None,
 ) -> List[StreamOutput]:
     if object_names:
         object_names = world.movable_names
@@ -37,16 +39,17 @@ def create_reachability_streams(
     confs = {}
     commands = {}
 
-    IsGrasp = Predicate(["?arm", "?obj", "?grasp"])
-    _grasp_stream = IsGrasp.stream(
+    Grasp = Predicate(["?arm", "?obj", "?grasp"])
+    _grasp_stream = Grasp.stream(
         conditional_generator=from_unary_gen_fn(partial(grasp_stream, world)),
         inputs=["?obj", "?arm"],
     )
 
-    Pick = Predicate(["?obj", "?grasp", "?placement", "?arm", "?conf", "?traj"])
+    Pick = Predicate(["?obj", "?grasp", "?placement", "?arm", "?conf1", "?conf2", "?traj"])
     _pick_stream = Pick.stream(
-        conditional_generator=from_gen_fn(partial(pick_stream, world, collisions=True)),
+        conditional_generator=partial(pick_stream, world, collisions=True),
         inputs=["?obj", "?grasp", "?placement", "?arm"],
+        batch_size=world.ik_batch,
     )
     streams = []
     for obj in object_names:
@@ -54,11 +57,12 @@ def create_reachability_streams(
         for arm in arms:
             grasps[obj, arm] = f"g{len(grasps)}"
             streams.append(_grasp_stream(obj, arm)(grasps[obj, arm]))
-            confs[obj, arm] = f"q{len(commands)}"
+            confs[obj, arm, 0] = f"q{len(confs)}"
+            confs[obj, arm, 1] = f"q{len(confs)}"
             commands[obj, arm] = f"c{len(commands)}"
             streams.append(
                 _pick_stream(obj, grasps[obj, arm], placements[obj], arm)(
-                    confs[obj, arm], commands[obj, arm]
+                    confs[obj, arm, 0], confs[obj, arm, 1], commands[obj, arm]
                 )
             )
     return streams
@@ -82,10 +86,13 @@ def sample_states(
     static_names = [name for name in world.object_names if name not in sample_names]
     ordered_stacks = get_ordered_stacks(world)
 
-    IsSupported = Predicate(["?obj1", "?placement1", "?obj2", "?placement2"])
-    stream = IsSupported.stream(
-        conditional_generator=from_unary_gen_fn(partial(placement_stream, world)),
+    Supported = Predicate(["?obj1", "?placement1", "?obj2", "?placement2"], name="Supported")
+    _supported_stream = Supported.stream(
+        conditional_generator=batch_list_gen_fn(
+            from_unary_gen_fn(partial(placement_stream, world)), batch_size=100
+        ),
         inputs=["?obj1", "?obj2", "?placement2"],
+        greedy_outputs=num,
     )
 
     placements = {}
@@ -94,7 +101,7 @@ def sample_states(
         placement2 = placements.get(obj2, None)
         if obj in sample_names:
             assert placement2 is not None
-            instance = stream(obj, obj2, placement2)
+            instance = _supported_stream(obj, obj2, placement2)
             placement = f"p{i}"
             output = instance(placement)
             streams.append(output)
@@ -105,6 +112,8 @@ def sample_states(
     Collision = Predicate(
         ["?obj1", "?state1", "?obj2", "?state2"],
         definition=partial(object_object_collision, world, collision_distance=collision_distance),
+        batch_size=INF,
+        name="ObjObjCollision",
     )
     for obj1, obj2 in itertools.combinations(sample_names, r=2):
         collision = Collision(obj1, placements[obj1], obj2, placements[obj2])

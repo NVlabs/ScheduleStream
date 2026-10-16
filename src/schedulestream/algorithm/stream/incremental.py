@@ -65,7 +65,10 @@ def solve_incremental(
         exhausted = (iteration != 0) and all(instance.exhausted for instance in stream_instances)
         if (iteration >= search_iteration) or (exhausted and unchanged):
             solution = solve_online(
-                problem, max_time=min(max_time - elapsed_time(start_time), search_time), **kwargs
+                problem,
+                max_time=min(max_time - elapsed_time(start_time), search_time),
+                verbose=verbose,
+                **kwargs,
             )
             if solution.success:
                 break
@@ -82,11 +85,6 @@ def solve_incremental(
                     if not evaluation.holds(problem.initial):
                         new_evaluations.append(evaluation)
 
-        if verbose:
-            print(
-                f"Iteration {iteration}) Evaluations ({(len(new_evaluations))}):"
-                f" {new_evaluations} | Elapsed: {elapsed_time(start_time):.3f} sec\n"
-            )
         problem.initial = problem.initial.new_state(new_evaluations)
         unchanged |= not new_evaluations
         iteration += 1

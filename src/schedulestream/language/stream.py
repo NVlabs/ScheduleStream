@@ -18,6 +18,7 @@ from schedulestream.common.graph import is_acyclic, visualize_graph
 from schedulestream.common.utils import (
     Key,
     apply_binding,
+    batched,
     compute_mapping,
     not_null,
     str_from_sequence,
@@ -64,6 +65,11 @@ class Context(Key):
         self.costs = frozenset(costs or [])
         super().__init__(self.outputs, self.constraints, self.costs)
 
+    def satisfy_constraints(self, outputs: Tuple[Any, ...]) -> None:
+        mapping = compute_mapping(self.outputs, wrap_arguments(outputs))
+        for constraint in self.constraints:
+            constraint.bind(mapping).set_value()
+
     def __str__(self) -> str:
         return (
             f"{self.__class__.__name__}(outputs={list(self.outputs)},"
@@ -82,6 +88,7 @@ class Stream(Anonymous):
         outputs: Optional[InputParameters] = None,
         output_condition: Optional[Conjunction] = None,
         context_functions: Optional[List[Function]] = None,
+        greedy_outputs: Optional[int] = 1,
         priority: float = 0,
         parent: Optional["Stream"] = None,
         **kwargs: Any,
@@ -103,6 +110,7 @@ class Stream(Anonymous):
             output_condition, input_condition & input_condition.condition
         )
         self.context_functions = list(context_functions or [])
+        self.greedy_outputs = greedy_outputs
         self.priority = priority
         self.parent = parent
         self.instances = {}
@@ -245,20 +253,32 @@ class PredicateStream(Stream):
 
 
 class BatchPredicateStream(PredicateStream):
-    def __init__(self, *args: Any, batch_size: int = 1, **kwargs: Any) -> None:
-        super().__init__(*args, context_functions=None, **kwargs)
+    def __init__(
+        self, *args: Any, batch_size: int = 1, max_outputs: Optional[int] = None, **kwargs: Any
+    ) -> None:
+        if kwargs.get("context_functions"):
+            raise ValueError(
+                f"Batch streams do not support context functions: {kwargs['context_functions']}"
+            )
+        super().__init__(*args, **kwargs)
         self.batch_size = batch_size
+        self.max_outputs = max_outputs
 
-    def next_batch(self, instances: List["StreamInstance"]) -> None:
+    def get_batch(self, instances: List["StreamInstance"]) -> int:
         inputs_list = [unwrap_arguments(instance.inputs) for instance in instances]
+        num_outputs = 0
         outs_from_inp = {}
-        for inp, out in self.conditional_generator(inputs_list):
-            outs_from_inp.setdefault(tuple(wrap_arguments(inp)), []).append(tuple(out))
+        for inp_list in batched(inputs_list, self.batch_size):
+            pairs = list(self.conditional_generator(inp_list))
+            num_outputs += len(pairs)
+            for inp, out in pairs:
+                outs_from_inp.setdefault(tuple(wrap_arguments(inp)), []).append(tuple(out))
         for inp, outs in outs_from_inp.items():
             instance = self.instantiate(inp)
             generator = instance.get_generator()
             generator.add(outs)
             instance.exhausted = False
+        return num_outputs
 
 
 class StreamInstance:
@@ -273,14 +293,14 @@ class StreamInstance:
             assert isinstance(constant, Constant), constant
         assert len(self.stream.inputs) == len(inputs), (self.stream.inputs, inputs)
         self.inputs = inputs
-        self.input_condition = self.stream.input_condition.bind(self.input_values)
-        self.output_condition = self.stream.output_condition.bind(self.input_values)
         self.instances = {}
         self.generators = {}
+        self.stream_outputs = {}
         self.reset()
 
-    def reset(self):
+    def reset(self) -> None:
         self.generators.clear()
+        self.stream_outputs.clear()
         self.iterations = 0
         self.exhausted = False
 
@@ -304,6 +324,14 @@ class StreamInstance:
     def input_values(self) -> Dict[Parameter, Constant]:
         return compute_mapping(self.stream.inputs, self.inputs)
 
+    @cached_property
+    def input_condition(self) -> Conjunction:
+        return self.stream.input_condition.bind(self.input_values)
+
+    @cached_property
+    def output_condition(self) -> Conjunction:
+        return self.stream.output_condition.bind(self.input_values)
+
     @property
     def outputs(self) -> TypedParameters:
         return self.stream.outputs
@@ -325,6 +353,11 @@ class StreamInstance:
         if context not in self.generators:
             self.generators[context] = self.create_generator(context)
         return self.generators[context]
+
+    def is_exhausted(self, context: Optional[Context] = None) -> bool:
+        """Whether the generator for ``context`` is exhausted, unlike ``exhausted``, which is set
+        once the generator for any context is."""
+        return (context in self.generators) and self.generators[context].exhausted
 
     def get_iterations(self, context: Optional[Context] = None) -> int:
         if context not in self.generators:
@@ -352,13 +385,23 @@ class StreamInstance:
         verbose: bool = False,
     ) -> List["StreamOutput"]:
         generator = self.get_generator(context)
+        if iteration is None:
+            iteration = generator.num
+        if (iteration, context) in self.stream_outputs:
+            return self.stream_outputs[iteration, context]
         try:
             output_list = generator.get_index(iteration)
         except StopIteration:
-            output_list = []
+            self.iterations = max(self.iterations, generator.num)
+            self.exhausted |= generator.exhausted
+            return []
         self.iterations = max(self.iterations, generator.num)
         self.exhausted |= generator.exhausted
+        if context is not None:
+            for outputs in output_list:
+                context.satisfy_constraints(outputs)
         stream_outputs = list(map(self.instantiate, output_list))
+        self.stream_outputs[iteration, context] = stream_outputs
         if verbose:
             self.dump()
         return stream_outputs
@@ -396,7 +439,6 @@ class StreamOutput:
         outputs = list(outputs)
         assert len(self.stream.outputs) == len(outputs), (self.stream.outputs, outputs)
         self.outputs = outputs
-        self.output_condition = self.stream_instance.output_condition.bind(self.output_values)
 
     @property
     def stream(self) -> Stream:
@@ -427,6 +469,10 @@ class StreamOutput:
         return compute_mapping(self.stream.outputs, self.outputs)
 
     @cached_property
+    def output_condition(self) -> Conjunction:
+        return self.stream_instance.output_condition.bind(self.output_values)
+
+    @cached_property
     def parameter_values(self) -> Dict[Parameter, Constant]:
         parameter_values = dict(self.input_values)
         parameter_values.update(self.output_values)
@@ -439,7 +485,7 @@ class StreamOutput:
     def bind(self, mapping: Dict[Argument, Argument]) -> "StreamOutput":
         stream_instance = self.stream_instance.bind(mapping)
         outputs = apply_binding(mapping, self.outputs)
-        return StreamOutput(stream_instance, outputs)
+        return stream_instance.instantiate(outputs)
 
     def unwrap(self) -> "StreamOutput":
         return StreamOutput(self.stream_instance, unwrap_arguments(self.outputs))

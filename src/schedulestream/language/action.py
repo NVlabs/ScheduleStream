@@ -9,7 +9,7 @@
 # its affiliates is strictly prohibited.
 #
 # Standard Library
-from functools import cache, cached_property
+from functools import cached_property
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 # NVIDIA
@@ -18,6 +18,7 @@ from schedulestream.common.utils import (
     EPSILON,
     apply_binding,
     compute_mapping,
+    instance_cache,
     remove_duplicates,
     str_from_sequence,
 )
@@ -46,7 +47,7 @@ from schedulestream.language.function import (
     create_formula,
     create_type_formula,
 )
-from schedulestream.language.predicate import Predicate
+from schedulestream.language.predicate import Atom, Goal, Predicate
 from schedulestream.language.state import State
 from schedulestream.language.utils import simplify_conjunction, simplify_expression
 
@@ -95,7 +96,7 @@ class Action(Anonymous):
             *(formula for formula in self.precondition.clause if formula not in implied_atoms)
         )
 
-    @property
+    @cached_property
     def parameters(self) -> Tuple[Parameter]:
         return tuple(self.typed_parameters.keys())
 
@@ -136,23 +137,30 @@ class Action(Anonymous):
             name = f"Applied{self.name.capitalize()}"
             active_parameters = [int(parameter in parameters) for parameter in self.parameters]
             if not all(active_parameters):
-                name += "".join(map(str, active_parameters))
+                integer = int("".join(map(str, active_parameters)), 2)
+                name += str(integer)
             typed_parameters = {
                 parameter: self.typed_parameters[parameter] for parameter in parameters
             }
-            self.applied_predicates[key] = Predicate(parameters=typed_parameters, name=name)
+            self.applied_predicates[key] = AppliedPredicate(
+                self, parameters=typed_parameters, name=name
+            )
         return self.applied_predicates[key]
 
-    def add_applied_predicate(self, parameters: Optional[List[Parameter]]) -> Predicate:
+    def applied_atom(self, parameters: Optional[List[Parameter]]) -> Optional[Atom]:
         if parameters is None:
             parameters = self.parameters
         key = frozenset(parameters)
-        added = key in self.applied_predicates
+        if key in self.applied_predicates:
+            return None
         predicate = self.applied_predicate(parameters)
-        if not added:
-            atom = predicate.atom(predicate.parameters)
+        return predicate.atom(predicate.parameters)
+
+    def add_applied_effect(self, parameters: Optional[List[Parameter]]) -> Predicate:
+        atom = self.applied_atom(parameters)
+        if atom is not None:
             self.effect = Conjunction(self.effect, atom)
-        return predicate
+        return self.applied_predicate(parameters)
 
     def remove_conditions(self, functions: List[Function]) -> "Action":
         return self.__class__(
@@ -186,6 +194,9 @@ class Action(Anonymous):
     def actions(self) -> List["Action"]:
         return [self]
 
+    def reset(self):
+        self.instances.clear()
+
     def dump(self):
         print(
             f"{self.__class__.__name__}(\n"
@@ -202,6 +213,28 @@ class Action(Anonymous):
     __repr__ = __str__
 
 
+class GoalAction(Action):
+    """An action whose sole effect is achieving :data:`Goal`, at zero cost."""
+
+    def __init__(
+        self,
+        parameters: InputParameters = None,
+        precondition: InputFormula = None,
+        **kwargs: Any,
+    ):
+        super().__init__(
+            parameters=parameters, precondition=precondition, effect=Goal(), cost=0.0, **kwargs
+        )
+
+    def remove_conditions(self, functions: List[Function]) -> "GoalAction":
+        return self.__class__(
+            name=self.name,
+            parameters=self.parameters,
+            precondition=self.precondition.remove_functions(functions),
+            language=self.language,
+        )
+
+
 class ActionInstance:
     def __init__(
         self,
@@ -214,9 +247,6 @@ class ActionInstance:
         self.action = action
         self.arguments = arguments
         self.parent = parent
-        self.precondition = self.action.precondition.bind(self.parameter_values)
-        self.effect = self.action.effect.bind(self.parameter_values)
-        self.cost = self.action.cost.bind(self.parameter_values)
 
     @property
     def lifted(self) -> Action:
@@ -233,6 +263,18 @@ class ActionInstance:
     @cached_property
     def parameter_values(self) -> Dict[Parameter, Constant]:
         return compute_mapping(self.parameters, self.arguments)
+
+    @cached_property
+    def precondition(self) -> Conjunction:
+        return self.action.precondition.bind(self.parameter_values)
+
+    @cached_property
+    def effect(self) -> Conjunction:
+        return self.action.effect.bind(self.parameter_values)
+
+    @cached_property
+    def cost(self) -> Any:
+        return self.action.cost.bind(self.parameter_values)
 
     @property
     def unbound_parameters(self) -> List[Parameter]:
@@ -255,7 +297,9 @@ class ActionInstance:
         return self.effect.terms
 
     @property
-    def language(self):
+    def language(self) -> Optional[str]:
+        if self.action.language is None:
+            return self.action.language
         return bind_language(self.action.language, self.parameter_values)
 
     def is_applicable(self, state: State, debug: bool = False) -> bool:
@@ -268,11 +312,11 @@ class ActionInstance:
                 input("Continue?")
         return self.precondition.holds(state)
 
-    @cache
+    @instance_cache
     def support(self, state: State) -> List[Evaluation]:
         return remove_duplicates(self.precondition.support(state) + self.cost.support(state))
 
-    @cache
+    @instance_cache
     def apply(self, state: State) -> Optional[State]:
         evaluations = self.effect.apply(state)
         if evaluations is None:
@@ -341,3 +385,9 @@ class ActionInstance:
         return f"{self.name}({str_from_sequence(self.arguments)})"
 
     __repr__ = __str__
+
+
+class AppliedPredicate(Predicate):
+    def __init__(self, action: Action, *args: Any, **kwargs: Any) -> None:
+        self.action = action
+        super().__init__(*args, **kwargs)

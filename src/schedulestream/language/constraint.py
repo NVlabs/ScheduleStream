@@ -11,15 +11,14 @@
 from __future__ import annotations
 
 # Standard Library
-from functools import cache
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # NVIDIA
-from schedulestream.common.utils import Key
+from schedulestream.common.utils import Key, instance_cache
 from schedulestream.language.argument import Argument
 from schedulestream.language.connective import Conjunction
 from schedulestream.language.expression import Expression, Formula
-from schedulestream.language.function import Function
+from schedulestream.language.function import Evaluation, Function
 
 if TYPE_CHECKING:
     # NVIDIA
@@ -49,12 +48,16 @@ class Cost(Key):
         return self.expression.function
 
     @property
-    def is_procedural(self):
+    def is_procedural(self) -> bool:
         return self.function.is_procedural
 
     @property
-    def is_static(self):
+    def is_static(self) -> bool:
         return self.function.is_static
+
+    @property
+    def batch_size(self) -> Optional[int]:
+        return self.function.batch_size
 
     @property
     def input_condition(self) -> Formula:
@@ -72,10 +75,24 @@ class Cost(Key):
         expression = self.expression.bind(mapping)
         return self.__class__(expression)
 
-    @cache
+    def is_evaluated(self) -> bool:
+        return self.term.is_evaluated()
+
+    @instance_cache
     def evaluate(self) -> Any:
         self.expression.term.lazy = False
         return self.expression.term.evaluate()
+
+    def evaluate_batch(self, costs: List[Cost]) -> List[Any]:
+        costs = [cost for cost in costs if not cost.is_evaluated()]
+        terms = [cost.term for cost in costs]
+        for term in terms:
+            term.lazy = False
+        return self.function.evaluate_batch(terms)
+
+    def is_exhausted(self, context: Optional[Context] = None) -> bool:
+        assert context is None
+        return self.exhausted
 
     def get_iterations(self, context: Optional[Context] = None) -> int:
         assert context is None
@@ -97,10 +114,21 @@ class Constraint(Cost):
     def term(self):
         return self.expression.term
 
-    @cache
+    @property
+    def sign(self) -> bool:
+        assert isinstance(self.expression, Evaluation), self.expression
+        return bool(self.expression.value.value)
+
+    @instance_cache
     def evaluate(self) -> Any:
         self.expression.term.lazy = False
         return self.expression.evaluate()
+
+    def set_value(self, value: Optional[Any] = None) -> None:
+        assert self.is_static, self
+        if value is None:
+            value = self.sign
+        self.expression.term.set_value(value)
 
     def get_outputs(self, iteration: int, **kwargs: Any) -> List["Constraint"]:
         if iteration == 0 and self.evaluate():

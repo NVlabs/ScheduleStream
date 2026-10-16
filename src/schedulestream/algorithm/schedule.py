@@ -34,7 +34,15 @@ from schedulestream.algorithm.utils import (
     compute_plan_cost,
     visualize_plan,
 )
-from schedulestream.common.utils import INF, compute_mapping, current_time, elapsed_time, get_length
+from schedulestream.common.utils import (
+    INF,
+    compute_mapping,
+    current_time,
+    elapsed_time,
+    flatten,
+    get_length,
+    remove_duplicates,
+)
 from schedulestream.language.durative import EndAction
 from schedulestream.language.problem import InstantiatedProblem, Problem, ProblemABC
 
@@ -50,15 +58,15 @@ def reschedule_temporal(
     new_plan = []
     remaining_actions = list(plan)
     while remaining_actions and not problem.goal.holds(state):
-        action_costs = {action: action.cost.evaluate(state) for action in remaining_actions}
+        applicable_actions = [action for action in remaining_actions if action.is_applicable(state)]
+        action_costs = {action: action.cost.evaluate(state) for action in applicable_actions}
         for action in sorted(action_costs, key=action_costs.get):
-            if action.is_applicable(state):
-                new_state = action.apply(state)
-                if new_state is not None:
-                    new_plan.append(action)
-                    remaining_actions.remove(action)
-                    state = new_state
-                    break
+            new_state = action.apply(state)
+            if new_state is not None:
+                new_plan.append(action)
+                remaining_actions.remove(action)
+                state = new_state
+                break
         else:
             return plan
     return new_plan
@@ -197,10 +205,14 @@ def schedule_solution(
 ) -> Optional[TimedPlan]:
     initial = problem.initial.new_state(solution.stream_atoms)
     actions = actions_from_timed(solution.plan)
-    new_problem = InstantiatedProblem(initial, actions, problem.goal, problem=None)
+    unique_actions = remove_duplicates(actions)
+    new_problem = InstantiatedProblem(initial, unique_actions, problem.goal, problem=None)
     new_problem = new_problem.simplify()
-    new_problem = sequential_from_temporal(new_problem)
-    sequential_plan = reschedule_temporal(new_problem, new_problem.actions, **kwargs)
+    assert len(new_problem.actions) == len(unique_actions)
+    simplified = dict(zip(unique_actions, new_problem.actions))
+    sequential_problem = sequential_from_temporal(new_problem)
+    plan = list(flatten(simplified[action].instances for action in actions))
+    sequential_plan = reschedule_temporal(sequential_problem, plan, **kwargs)
     return time_plan(sequential_plan)
 
 

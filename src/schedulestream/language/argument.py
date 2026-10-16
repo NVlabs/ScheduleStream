@@ -26,6 +26,11 @@ PARAMETER_PREFIX = "?"
 FUNCTION_PARAMETER = f"{PARAMETER_PREFIX}output"
 OUTPUT = FUNCTION_PARAMETER
 RawConstant = Any
+PRIMITIVE_TYPES = (str, bytes, bool, int, float, complex, type(None))
+
+
+def is_primitive(value: Any) -> bool:
+    return isinstance(value, PRIMITIVE_TYPES)
 
 
 def is_parameter(value: Union[Any, str]) -> bool:
@@ -98,9 +103,10 @@ class Constant(Expression):
             return
         self.value = entity
         self.num = len(self._from_id)
-        self._from_id[type(entity), id(entity)] = self
         if is_hashable(entity):
             self._from_value[type(entity), entity] = self
+        else:
+            self._from_id[type(entity), id(entity)] = self
 
     def __new__(cls, entity):
         value = cls.get_value(entity)
@@ -122,11 +128,23 @@ class Constant(Expression):
     def is_static(self) -> bool:
         return True
 
+    @property
+    def is_primitive(self) -> bool:
+        return is_primitive(self.value)
+
     def evaluate(self, state: Optional[State] = None) -> RawConstant:
         return self.value
 
     def support(self, state: State) -> List[Evaluation]:
         return []
+
+    @staticmethod
+    def has_value(entity: Any) -> bool:
+        if is_hashable(entity):
+            key = (type(entity), entity)
+            return key in Constant._from_value
+        key = (type(entity), id(entity))
+        return key in Constant._from_id
 
     @staticmethod
     def get_value(entity: Any) -> Optional["Constant"]:
@@ -144,6 +162,13 @@ class Constant(Expression):
     def to_value(entity: Any) -> "Constant":
         return Constant(entity)
 
+    @staticmethod
+    def reset() -> None:
+        Constant._from_id.clear()
+        for key, constant in list(Constant._from_value.items()):
+            if not isinstance(constant.value, (bool, type(None))):
+                del Constant._from_value[key]
+
     def __lt__(self, other: "Constant") -> bool:
         return self.num < other.num
 
@@ -157,16 +182,16 @@ WrappedArgument = Union[Parameter, Constant]
 Argument = Union[str, Any, WrappedArgument]
 
 
-def wrap_argument(argument: Argument) -> WrappedArgument:
+def wrap_argument(argument: Argument, **kwargs: Any) -> WrappedArgument:
     if isinstance(argument, Expression):
         return argument
     if is_parameter(argument):
         return Parameter(argument)
-    return Constant(argument)
+    return Constant(argument, **kwargs)
 
 
-def wrap_arguments(arguments: List[Argument]) -> List[WrappedArgument]:
-    return list(map(wrap_argument, arguments))
+def wrap_arguments(arguments: List[Argument], **kwargs: Any) -> List[WrappedArgument]:
+    return [wrap_argument(arg, **kwargs) for arg in arguments]
 
 
 def unwrap_argument(argument: WrappedArgument) -> Any:
@@ -185,5 +210,6 @@ def bind_language(
     for parameter in sorted(parameter_values, key=len, reverse=True):
         if parameter in language:
             value = parameter_values[parameter].value
+            value = repr(value)
             language = language.replace(parameter, value)
     return language

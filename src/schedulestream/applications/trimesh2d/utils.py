@@ -22,7 +22,11 @@ from typing import Annotated, Any, Iterable, Iterator, List, Literal, Optional, 
 import numpy as np
 import pyglet
 import trimesh
+from PIL import Image as _PILImage
 from trimesh.viewer import SceneViewer
+
+if not hasattr(_PILImage, "fromstring"):
+    _PILImage.fromstring = _PILImage.frombytes
 
 # NVIDIA
 from schedulestream.common.utils import create_seed, current_time, elapsed_time
@@ -58,15 +62,16 @@ def get_video_path(video: Optional[str], name: str = "video") -> Optional[str]:
     root_dir = os.path.abspath(os.path.join(__file__, *itertools.repeat(os.pardir, times=5)))
     video_dir = os.path.join(root_dir, "videos")
     date_name = datetime.datetime.now().strftime("%y-%m-%d_%H-%M-%S")
-    if video == "mp4":
-        video = os.path.join(video_dir, f"{name}_{date_name}.mp4")
-    elif video == "gif":
-        video = os.path.join(video_dir, f"{name}_{date_name}.gif")
+    extensions = ["mp4", "gif", "webm", "webp", "apng", "mov", "avi", "mkv"]
+    if video in extensions:
+        video = os.path.join(video_dir, f"{name}_{date_name}.{video}")
     return os.path.abspath(video)
 
 
 def create_video(
-    frames: Iterable[bytes], video_path: str = "video.mp4", frequency: float = 30.0
+    frames: Iterable[Union[bytes, np.ndarray]],
+    video_path: str = "video.mp4",
+    frequency: float = 30.0,
 ) -> Optional[str]:
     if not frames:
         return None
@@ -76,11 +81,15 @@ def create_video(
 
     video_path = os.path.abspath(video_path)
     os.makedirs(os.path.dirname(video_path), exist_ok=True)
-    kwargs = dict(loop=100) if video_path.endswith(".gif") else dict()
+    looping_extensions = (".gif", ".webp", ".apng", ".png")
+    kwargs = dict(loop=100) if video_path.endswith(looping_extensions) else dict()
     video_writer = imageio.get_writer(video_path, fps=frequency, **kwargs)
     for frame in frames:
-        image_pil = Image.open(BytesIO(frame))
-        image_np = np.array(image_pil)
+        if isinstance(frame, np.ndarray):
+            image_np = frame
+        else:
+            image_pil = Image.open(BytesIO(frame))
+            image_np = np.array(image_pil)
         video_writer.append_data(image_np)
     video_writer.close()
     return video_path
@@ -123,10 +132,12 @@ def apply_alpha(color: Color, **kwargs: Any) -> np.ndarray:
 COLORS = {
     "black": to_rgba(red=0.0, green=0.0, blue=0.0),
     "grey": to_rgba(*0.5 * np.ones(3)),
+    "gray": to_rgba(*0.5 * np.ones(3)),
     "white": to_rgba(red=1.0, green=1.0, blue=1.0),
     "red": to_rgba(red=1.0),
     "green": to_rgba(green=1.0),
     "blue": to_rgba(blue=1.0),
+    "brown": to_rgba(red=0.6, green=0.3, blue=0.1),
 }
 
 

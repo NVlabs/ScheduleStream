@@ -10,8 +10,9 @@
 #
 # Standard Library
 import math
+from contextlib import contextmanager
 from functools import cache
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 # Third Party
 import curobo.wrap.reacher.ik_solver
@@ -44,7 +45,7 @@ from schedulestream.applications.custream.command import Trajectory
 from schedulestream.applications.custream.config import extract_robot_config, load_robot_yaml
 from schedulestream.applications.custream.ik_wrapper import IKWrapper
 from schedulestream.applications.custream.object import Object
-from schedulestream.applications.custream.spheres import add_spheres
+from schedulestream.applications.custream.spheres import INACTIVE_RADIUS, add_spheres
 from schedulestream.applications.custream.state import Attachment, Configuration, State
 from schedulestream.applications.custream.utils import (
     INF,
@@ -55,6 +56,7 @@ from schedulestream.applications.custream.utils import (
     extract_joint_state,
     matrix_from_pose,
     multiply_poses,
+    position_from_pose,
     to_cpu,
     to_pose,
     transform_spheres,
@@ -84,6 +86,8 @@ class TAMPConfig:
     approach_position_step: float = 0.10
     approach_orientation_step: float = PI / 16
     approach_velocity_scale: float = 0.5
+    approach_rest_steps: int = 0
+    approach_sphere_inflation: Optional[float] = None
 
 
 def create_world_config(objects: Optional[List[Object]] = None) -> Optional[WorldConfig]:
@@ -97,7 +101,7 @@ def create_world_config(objects: Optional[List[Object]] = None) -> Optional[Worl
 
 class ActiveContext(Context):
     def __init__(
-        self, world: "World", objects: Optional[Tuple[str]] = (), links: Optional[List[str]] = ()
+        self, world: "World", objects: Optional[Tuple[str]] = None, links: Optional[List[str]] = ()
     ):
         if objects is None:
             objects = world.object_names
@@ -138,12 +142,14 @@ class World(MotionGen):
         tamp_config: Optional[TAMPConfig] = None,
         num_attached_spheres: Optional[int] = None,
         batch_size: Optional[int] = None,
+        factored_ik: bool = False,
         convexify: bool = False,
         visualize_spheres: bool = False,
         debug: bool = True,
         **kwargs: Any,
     ):
         self.logger = structlog.get_logger()
+        self.initialized = False
 
         if tamp_config is None:
             tamp_config = TAMPConfig()
@@ -152,6 +158,7 @@ class World(MotionGen):
         if batch_size is not None:
             batch_size = int(batch_size)
         self.batch_size = batch_size
+        self.factored_ik = factored_ik
 
         self.robot_yaml = load_robot_yaml(robot_config)
         self.robot_config = self.robot_yaml["robot_cfg"]
@@ -182,11 +189,9 @@ class World(MotionGen):
         )
         super().__init__(self.motion_gen_config)
         self.ik_wrapper = IKWrapper(self.ik_solver)
-        for obj in self.objects:
-            obj.world = self
 
-        self.add_objects(self.scene, visualize_spheres=visualize_spheres)
-        if visualize_spheres:
+        self.visualize_spheres = visualize_spheres
+        if self.visualize_spheres:
             self.add_robot_spheres(self.scene)
         if debug:
             for link in self.tool_links:
@@ -195,14 +200,19 @@ class World(MotionGen):
         self.set_camera_pose(camera_pose)
 
         self.attached_objects = {}
-        self.dirty_poses = set()
         self.active_links = {}
         self.active_objects = {}
         if self.world_collision is not None:
             self._enable_collision = self.world_collision.enable_obstacle
             self.world_collision.enable_obstacle = self.wrapped_enable_collision
+        self._initialize_objects()
 
+    def _initialize_objects(self):
+        assert not self.attached_objects
+        self.active_objects.clear()
+        self.add_objects(self.scene, visualize_spheres=self.visualize_spheres)
         for obj in self.objects:
+            obj.world = self
             if not obj.collider:
                 self.set_object_active(obj.name, active=False)
 
@@ -235,7 +245,9 @@ class World(MotionGen):
         self.active_objects[name] = enable
         return self._enable_collision(name, enable=enable)
 
-    def initialize(self, batch_size: int = 1, iterations: int = 3) -> None:
+    def initialize(self, batch_size: int = 1, iterations: int = 3) -> bool:
+        if self.initialized:
+            return False
         link_poses = self.get_link_poses()
         batch_poses = {link: pose.repeat(batch_size).clone() for link, pose in link_poses.items()}
         self.logger.info(
@@ -243,7 +255,29 @@ class World(MotionGen):
             f" {iterations} iterations..."
         )
         for _ in range(iterations):
-            self.inverse_kinematics(batch_poses, seed=None)
+            if self.factored_ik:
+                for link in batch_poses:
+                    self.inverse_kinematics({link: batch_poses[link]}, seed=None)
+            else:
+                self.inverse_kinematics(batch_poses, seed=None)
+        joint_state = self.to_joint_state(self.retract_conf.unsqueeze(0))
+        for _ in range(iterations):
+            self.plan_motion(start_state=joint_state, goal_state=joint_state, visualize=False)
+        self.initialized = True
+
+        return True
+
+    def clear_objects(self) -> None:
+        world_scene = self.get_world_scene()
+        for node_name in world_scene.graph.nodes_geometry:
+            self.scene.delete_geometry(node_name)
+        self.clear_world_cache()
+
+    def set_objects(self, objects: List[Object]) -> None:
+        self.clear_objects()
+        world_config = create_world_config(objects)
+        self.update_world(world_config)
+        self._initialize_objects()
 
     def add_robot_spheres(self, scene: Optional[trimesh.Scene] = None) -> trimesh.Scene:
         if scene is None:
@@ -332,6 +366,10 @@ class World(MotionGen):
         return self.kinematics_yaml["cspace"]
 
     @property
+    def spheres_yaml(self) -> dict:
+        return self.kinematics_yaml["collision_spheres"]
+
+    @property
     def scene(self) -> trimesh.Scene:
         return self.yourdf.scene
 
@@ -402,6 +440,11 @@ class World(MotionGen):
     def default_arm(self) -> str:
         return self.arms[0]
 
+    @property
+    def arm(self) -> Optional[str]:
+        assert len(self.arms) == 1, self.arms
+        return self.default_arm
+
     def get_arm_link(self, arm: str) -> Optional[str]:
         link_from_arm = {self.get_link_arm(link): link for link in self.tool_links}
         return link_from_arm[arm]
@@ -437,10 +480,18 @@ class World(MotionGen):
 
         tool_link = self.get_arm_link(arm)
         finger_joints = []
-        for link in self.yourdf.get_link_cluster(tool_link):
+        for link in self.get_rigid_links(tool_link, inactive=False):
             for joint in joints_from_parent.get(link, []):
                 finger_joints.append(joint.name)
         return finger_joints
+
+    def get_finger_links(self, arm: str) -> List[str]:
+        gripper_joints = self.get_gripper_joints(arm)
+        return self.yourdf.get_active_links(joints=gripper_joints, include_roots=True)
+
+    def get_hand_links(self, arm: str) -> List[str]:
+        tool_link = self.get_arm_link(arm)
+        return self.get_rigid_links(tool_link, inactive=True)
 
     @property
     def objects(self) -> List[Object]:
@@ -493,7 +544,6 @@ class World(MotionGen):
         if collision:
             self.world_collision.update_obstacle_pose(name, pose, update_cpu_reference=True)
         self.scene.graph.update(frame_to=name, frame_from=None, matrix=matrix_from_pose(pose))
-        self.dirty_poses.add(name)
 
     def is_object_active(self, name: str) -> bool:
         return self.active_objects.get(str(name), True)
@@ -617,6 +667,64 @@ class World(MotionGen):
     @cache
     def get_link_spheres(self, link: str) -> torch.Tensor:
         return self.kinematics_config.get_link_spheres(link)
+
+    def set_link_spheres(self, link: str, spheres: torch.Tensor) -> None:
+        self.kinematics_config.update_link_spheres(link, self.to_device(spheres))
+
+    def get_link_default_spheres(self, link) -> torch.Tensor:
+        try:
+            return self.kinematics_config.get_reference_link_spheres(link)
+        except KeyError:
+            return self.to_device(np.empty([0, 4]))
+
+    def set_link_default_spheres(self, link: str, spheres: torch.Tensor) -> None:
+        spheres = self.to_device(spheres)
+        sphere_indices = self.kinematics_config.get_sphere_index_from_link_name(link)
+        start_idx = 0
+        sphere_indices = sphere_indices[start_idx : start_idx + spheres.shape[0]]
+        self.kinematics_config.reference_link_spheres[sphere_indices, :] = spheres
+
+    def set_sphere_inflation(
+        self,
+        inflation: Optional[float],
+        links: Optional[Iterable[str]] = None,
+    ) -> None:
+        if inflation is None:
+            return
+        links = set(self.spheres_yaml) if links is None else set(links)
+        for link, spheres_yaml in self.spheres_yaml.items():
+            if link not in links:
+                continue
+            indices = self.get_sphere_indices(link)
+            if len(indices) == 0:
+                continue
+            rows = []
+            for sphere in spheres_yaml:
+                radius = sphere["radius"]
+                if "inflation" in sphere:
+                    radius += inflation - sphere["inflation"]
+                if radius <= 0.0:
+                    radius = INACTIVE_RADIUS
+                rows.append((*sphere["center"], radius))
+            spheres = np.array(rows, dtype=float)
+            self.set_link_spheres(link, spheres)
+
+    @contextmanager
+    def spheres_context(
+        self,
+        links: Optional[Iterable[str]] = None,
+    ) -> Iterator[None]:
+        if links is None:
+            links = self.links
+        link_spheres: Dict[str, torch.Tensor] = {}
+        for link in links:
+            if link not in link_spheres:
+                spheres = self.get_link_spheres(link)
+                if len(spheres) != 0:
+                    link_spheres[link] = spheres.clone()
+        yield
+        for link, spheres in link_spheres.items():
+            self.set_link_spheres(link, spheres)
 
     def get_rigid_links(self, link: str, inactive: bool = False) -> List[str]:
         edges = list(self.yourdf.rigid_edges)
@@ -949,7 +1057,7 @@ class World(MotionGen):
             poses = initial_pose
         collision_from_world = multiply_poses(initial_pose, poses.inverse())
         spheres_collision = transform_spheres(collision_from_world, spheres)
-        with self.active_context(objects=None):
+        with self.active_context():
             self.enable_objects_active(active_names=[obj])
             return self.get_sphere_distances(spheres_collision)
 
@@ -1112,7 +1220,10 @@ class World(MotionGen):
         links = list(link_poses)
         [batch] = set(map(len, link_poses.values()))
 
-        ik_wrapper = self.ik_wrapper
+        if self.factored_ik:
+            ik_wrapper = self.get_ik_wrapper(links)
+        else:
+            ik_wrapper = self.ik_wrapper
 
         retract_config = self.retract_conf.repeat(batch, 1)
         _ee_pose = self.get_ee_pose(confs=retract_config)
@@ -1195,7 +1306,7 @@ class World(MotionGen):
             if joint_states:
                 seed = self.complete_joint_state(joint_states[-1]).position
             joint_state, success = self.inverse_kinematics(
-                link_poses, seed=seed, verbose=True, **kwargs
+                link_poses, seed=seed, verbose=False, **kwargs
             )
             if joint_states:
                 difference = joint_state.position - joint_states[-1].position[-1]
@@ -1226,11 +1337,13 @@ class World(MotionGen):
 
         if verbose:
             batch_solutions = to_cpu(all_success.sum(axis=-1))
+            batch_success = sum(batch_solutions != 0)
             solutions = sum(batch_solutions)
             (self.logger.info if solutions else self.logger.warning)(
-                f"{self.iterative_inverse_kinematics.__name__}) Solutions: {batch_solutions} | Min"
-                f" Distance: {math.degrees(torch.min(max_distance)):.3f} deg | Links: {links} |"
-                f" Batch: {batch} | Seeds: {self.num_seeds} | Length: {length} | Dim:"
+                f"{self.iterative_inverse_kinematics.__name__}) Solved: {batch_success}/{batch} |"
+                f" Solutions: {batch_solutions} | Min Distance:"
+                f" {math.degrees(torch.min(max_distance)):.3f} deg | Links: {links} | Batch:"
+                f" {batch} | Seeds: {self.num_seeds} | Length: {length} | Dim:"
                 f" {joint_state.shape[-1]} |  {elapsed_time(start_time):.3f} sec"
             )
         return joint_state, max_distance
@@ -1280,8 +1393,27 @@ class World(MotionGen):
         valid, status = self.check_start_state(joint_state)
         return valid
 
+    def set_sphere_clearance(
+        self, confs: Optional[List[Conf]] = None, clearance: Optional[float] = 1e-3
+    ) -> None:
+        if clearance is None:
+            return
+        if confs is None:
+            confs = [self.conf]
+        distances = -self.get_distances(confs=confs)
+        sphere_distances = torch.min(distances, dim=0).values
+        deficit = torch.clamp(clearance - sphere_distances, min=0.0)
+        self.kinematics_config.link_spheres[:, 3] -= deficit
+        radii = self.kinematics_config.link_spheres[:, 3]
+        radii[radii <= 0.0] = INACTIVE_RADIUS
+
     def plan_motion(
-        self, goal_state: JointState, start_state: Optional[JointState] = None, **kwargs: Any
+        self,
+        goal_state: JointState,
+        start_state: Optional[JointState] = None,
+        sphere_clearance: Optional[float] = 1e-3,
+        visualize: bool = False,
+        **kwargs: Any,
     ) -> Optional[JointState]:
         start_time = current_time()
         active_joints = list(goal_state.joint_names)
@@ -1292,11 +1424,29 @@ class World(MotionGen):
         goal_limit = -torch.max(self.get_limit_distances(goal_state))
         goal_state = self.complete_joint_state(goal_state)
 
-        result = self.plan_single_js(
-            start_state.clone(),
-            goal_state.clone(),
-            plan_config=MotionGenPlanConfig(**kwargs).clone(),
-        )
+        with self.spheres_context():
+            confs = torch.cat([start_state.position, goal_state.position])
+            self.set_sphere_clearance(confs, clearance=sphere_clearance)
+            if visualize:
+                scene = self.active_scene()
+                add_spheres(
+                    self.get_spheres(confs=start_state.position),
+                    colors=(0, 0, 255, 100),
+                    scene=scene,
+                )
+                add_spheres(
+                    self.get_spheres(confs=goal_state.position),
+                    colors=(0, 255, 0, 100),
+                    scene=scene,
+                )
+                scene.show()
+
+            result = self.plan_single_js(
+                start_state.clone(),
+                goal_state.clone(),
+                plan_config=MotionGenPlanConfig(**kwargs).clone(),
+            )
+
         joint_state = result.get_interpolated_plan()
         joint_state = extract_joint_state(joint_state, active_joints)
         # NVIDIA
@@ -1313,24 +1463,41 @@ class World(MotionGen):
             f" Duration: {get_length(joint_state)*self.time_step:.3f} sec | Distance:"
             f" {distance:.3f} | Valid: {result.valid_query} | Status: {status} | Start Limit:"
             f" {start_limit:.3f} | Goal Limit: {goal_limit:.3f} | Graph: {result.used_graph} |"
-            f" Attempts: {attempts} | Joints ({len(active_joints)}): {active_joints} | Elapsed:"
-            f" {elapsed_time(start_time):.3f} sec"
+            f" Attempts: {attempts} | Attached ({len(self.attached_objects)}):"
+            f" {sorted(self.attached_objects)} | Joints ({len(active_joints)}): {active_joints} |"
+            f" Elapsed: {elapsed_time(start_time):.3f} sec"
         )
         if not success:
             return None
         return joint_state
 
+    def description(self) -> str:
+        description = (
+            "In the coordinate system, +x is forward, -x is backward, +y is left, -y is right, +z"
+            " is up, and -z is down. The world contains the following objects:"
+        )
+        for obj in self.objects:
+            description += f"\n{obj.description()}"
+        return description
+
     def dump(self) -> None:
         for i, arm in enumerate(self.arms):
+            base_link = self.get_arm_base_link(arm)
+            base_pose = self.get_node_pose(base_link)
             self.logger.info(
-                f"{i}/{len(self.arms)}) Arm: {arm} | Tool link: {self.get_arm_link(arm)} | Joints:"
-                f" {self.get_arm_joints(arm)}"
+                f"{i}/{len(self.arms)}) Arm: {arm} | Base link: {base_link} | Tool link:"
+                f" {self.get_arm_link(arm)} | Joints ({len(self.get_arm_joints(arm))}):"
+                f" {self.get_arm_joints(arm)} | Position: {position_from_pose(base_pose)}"
             )
         self.logger.info(
             f"Arms: {self.arms} | Base link: {self.base_link} | EE link: {self.ee_link} | Tool"
-            f" links: {self.tool_links} | Attached links: {self.attached_links} | Joints:"
-            f" {self.active_joints} | Objects: {self.object_names}"
+            f" links ({len(self.tool_links)}): {self.tool_links} | Attached links"
+            f" ({len(self.attached_links)}): {self.attached_links} | Joints"
+            f" ({len(self.active_joints)}): {self.active_joints} | Objects"
+            f" ({len(self.object_names)}): {self.object_names}"
         )
+        for i, obj in enumerate(self.objects):
+            self.logger.info(f"{i}/{len(self.objects)}) {obj.description()}")
 
     def __str__(self) -> str:
         return (

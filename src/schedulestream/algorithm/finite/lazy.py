@@ -57,6 +57,7 @@ def solve_lazy(
     max_time: float = INF,
     max_cost: float = INF,
     success_cost: float = INF,
+    makespan_weight: float = 1,
     verbose: bool = False,
     **kwargs: Any,
 ) -> TemporalSolution:
@@ -85,7 +86,7 @@ def solve_lazy(
         satisfied = evaluate_constraints(dependencies)
         if verbose:
             print(f"Iteration: {iteration} | Satisfied: {satisfied} | Cost: {cost:.3f}")
-        if satisfied and (solution.score < best_solution.score):
+        if satisfied and (solution.metric(makespan_weight) < best_solution.metric(makespan_weight)):
             best_solution = solution
 
     return best_solution

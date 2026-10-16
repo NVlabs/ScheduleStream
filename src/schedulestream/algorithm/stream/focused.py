@@ -12,9 +12,9 @@
 from typing import Any, List, Optional
 
 # NVIDIA
+from schedulestream.algorithm.stream.batch_satisfier import BatchSatisfier
 from schedulestream.algorithm.stream.common import StreamSolution
 from schedulestream.algorithm.stream.incremental import solve_incremental
-from schedulestream.algorithm.stream.satisfier import Satisfier
 from schedulestream.algorithm.stream.utils import complete_solution, retrace_solution
 from schedulestream.common.utils import (
     INF,
@@ -75,23 +75,24 @@ def solve_focused(
     search_time: float = INF,
     satisfy_time: float = 0.0,
     optimize_time: float = 0.0,
-    num_reschedule: int = 0,
+    num_reschedule: int = 1,
     success_cost: float = INF,
+    makespan_weight: float = 1,
+    satisfy: bool = True,
     greedy: bool = False,
-    verbose: bool = True,
+    verbose: bool = False,
     **kwargs: Any,
 ) -> List[StreamSolution]:
     start_time = current_time()
-    satisfier = Satisfier()
-    satisfier.improved = True
     problem.lazily_wrap_functions()
+    satisfier = BatchSatisfier(max_solutions=max_solutions, makespan_weight=makespan_weight)
 
     iterator = 0
     subproblems = {}
     while (
         elapsed_time(start_time) < max_time
         and (satisfier.num_skeletons < max_skeletons)
-        and (satisfier.num_solutions < max_solutions)
+        and not satisfier.is_full()
     ):
         print(SEPARATOR)
         print(
@@ -105,7 +106,7 @@ def solve_focused(
             binding = skeleton.best_binding
             if (
                 binding.bound
-                and not binding.complete
+                and binding.invalid
                 and not binding.rescheduled
                 and not satisfier.num_solutions
             ):
@@ -131,6 +132,7 @@ def solve_focused(
                 stream_outputs,
                 max_time=remaining_time,
                 max_cost=satisfier.min_makespan - epsilon,
+                verbose=verbose,
                 **kwargs,
             )
             satisfier.improved = False
@@ -138,12 +140,10 @@ def solve_focused(
 
         if solution is not None:
             solution = retrace_solution(solution)
-            if verbose:
-                print(
-                    f"Plan ({get_length(solution.plan)}): {solution.plan}\nStream Plan"
-                    f" ({get_length(solution.stream_plan)}): {solution.stream_plan}"
-                )
-            satisfier.satisfy_skeleton(solution)
+            solution.dump()
+            if not satisfy:
+                return [solution]
+            satisfier.add_solution(solution)
 
         failed = solution is None
         remaining_time = max_time - elapsed_time(start_time)
@@ -158,17 +158,21 @@ def solve_focused(
 
         improved = satisfier.satisfy(
             max_time=remaining_time,
-            max_solutions=max_solutions,
             success_cost=success_cost,
             abort=failed,
         )
         if failed and not improved:
             break
 
-    remaining_time = max_time - elapsed_time(start_time)
-    satisfier.satisfy(
-        max_time=min(optimize_time, remaining_time), max_solutions=INF, success_cost=0.0
-    )
+    remaining_time = min(optimize_time, max_time - elapsed_time(start_time))
+    satisfier.max_solutions = INF
+    if remaining_time > 0:
+        print(SEPARATOR)
+        print(
+            f"Optimize time: {remaining_time:.3f} sec | Solutions:"
+            f" {satisfier.num_solutions} | Makespan: {satisfier.min_makespan:.3f}"
+        )
+        satisfier.satisfy(max_time=remaining_time, success_cost=0.0)
 
     solutions = satisfier.sorted_solutions
     start_time = current_time()
@@ -178,12 +182,14 @@ def solve_focused(
         rescheduled_solution = complete_solution(problem, solution)
         improved = rescheduled_solution.makespan < solution.makespan
         print(
-            f"{i}/{len(satisfier.sorted_solutions)} | Improved: {improved} | Original Makespan:"
+            f"Reschedule {i}/{len(solutions)} | Cost: {solution.cost:.3f} | Original Makespan:"
             f" {solution.makespan:.3f} | Rescheduled Makespan:"
-            f" {rescheduled_solution.makespan:.3f} | Elapsed: {elapsed_time(start_time):.3f} sec"
+            f" {rescheduled_solution.makespan:.3f} | Metric:"
+            f" {solution.metric(makespan_weight):.3f} | Improved: {improved} | Elapsed:"
+            f" {elapsed_time(start_time):.3f} sec"
         )
         if improved:
             solutions.append(rescheduled_solution)
-    solutions.sort(key=lambda s: s.makespan)
+    solutions.sort(key=lambda s: s.metric(makespan_weight))
 
     return solutions

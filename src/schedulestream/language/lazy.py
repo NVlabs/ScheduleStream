@@ -11,23 +11,21 @@
 from __future__ import annotations
 
 # Standard Library
-from functools import cache, cached_property
-from typing import TYPE_CHECKING, Any, Dict, Hashable, Optional
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional
 
 # NVIDIA
-from schedulestream.common.utils import compute_mapping, key_from_kwargs
-from schedulestream.language.action import DEFAULT_COST
+from schedulestream.common.utils import compute_mapping, instance_cache, key_from_kwargs
 from schedulestream.language.argument import (
     PARAMETER_PREFIX,
     Constant,
     Parameter,
     Parameters,
     unwrap_arguments,
-    wrap_argument,
     wrap_arguments,
 )
 from schedulestream.language.function import Function
-from schedulestream.language.generator import ConditionalGenerator, Output, from_fn
+from schedulestream.language.generator import ConditionalGenerator, Input, Output, from_fn
 
 if TYPE_CHECKING:
     # NVIDIA
@@ -37,12 +35,40 @@ if TYPE_CHECKING:
 def lazy_function(function: Function) -> None:
     procedural = function.definition
 
-    def lazy_fn(*args: Any, **kwargs: Any) -> Any:
+    def lazy_fn(*args: Any, **kwargs: Any) -> float:
         if any(isinstance(arg, LazyOutput) for arg in args):
             return function.default_value
         return procedural(*args, **kwargs)
 
-    function.definition = lazy_fn
+    function.set_definition(lazy_fn)
+
+
+def lazy_batch_function(function: Function) -> None:
+    procedural = function.definition
+
+    def lazy_batch_fn(input_list: List[Input]) -> List[float]:
+        batch_inputs = []
+        output_from_index = {}
+        index_from_batch_index = {}
+        for index, inputs in enumerate(input_list):
+            if any(isinstance(inp, LazyOutput) for inp in inputs):
+                output_from_index[index] = function.default_value
+            else:
+                batch_index = len(batch_inputs)
+                index_from_batch_index[batch_index] = index
+                batch_inputs.append(inputs)
+        batch_outputs = procedural(batch_inputs)
+        if len(batch_outputs) != len(batch_inputs):
+            raise ValueError(
+                f"lazy_batch_fn: procedural returned {len(batch_outputs)} outputs"
+                f" for {len(batch_inputs)} inputs"
+            )
+        for batch_index, output in enumerate(batch_outputs):
+            index = index_from_batch_index[batch_index]
+            output_from_index[index] = output
+        return [output_from_index[index] for index in range(len(input_list))]
+
+    function.set_definition(lazy_batch_fn)
 
 
 class LazyOutput:
@@ -60,8 +86,9 @@ class LazyOutput:
         self.output = output
         self.value = value
 
-    def reset(self) -> None:
-        self._cache.clear()
+    @staticmethod
+    def reset() -> None:
+        LazyOutput._cache.clear()
 
     @cached_property
     def output_index(self) -> int:
@@ -121,7 +148,7 @@ class LazyOutput:
 
         return from_fn(fn)
 
-    @cache
+    @instance_cache
     def substitute(self) -> Constant:
         assert set(self.input_values) == set(self.stream.inputs)
         inputs = list(map(self.input_values.get, self.stream.inputs))

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 # Standard Library
 import cProfile
+import importlib
+import importlib.util
 import math
 import os
 import pickle
@@ -21,7 +23,7 @@ import shutil
 import signal
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields
 from functools import cached_property, wraps
 from itertools import cycle, islice
@@ -45,6 +47,40 @@ import yaml
 INF = float("inf")
 EPSILON = 1e-6
 SEPARATOR = "\n" + 80 * "-" + "\n"
+
+ANSI_RESET = "\033[0m"
+ANSI_COLORS = {
+    "red": "\033[91m",
+    "green": "\033[92m",
+    "yellow": "\033[93m",
+}
+
+
+def colored(text: str, color: Optional[str] = None) -> str:
+    """Wrap ``text`` in the named ANSI color so terminal output stands out (None: unchanged)."""
+    if color is None:
+        return text
+    return f"{ANSI_COLORS[color]}{text}{ANSI_RESET}"
+
+
+def print_colored(text: str, color: Optional[str] = None, **kwargs: Any) -> None:
+    """Print ``text`` in the named ANSI color (None: uncolored); kwargs forward to print."""
+    print(colored(text, color=color), **kwargs)
+
+
+def print_red(text: str, **kwargs: Any) -> None:
+    """Print red terminal text (used for errors)."""
+    print_colored(text, color="red", **kwargs)
+
+
+def print_yellow(text: str, **kwargs: Any) -> None:
+    """Print yellow terminal text (used for warnings)."""
+    print_colored(text, color="yellow", **kwargs)
+
+
+def print_green(text: str, **kwargs: Any) -> None:
+    """Print green terminal text (used for successes)."""
+    print_colored(text, color="green", **kwargs)
 
 
 def current_time() -> float:
@@ -92,11 +128,14 @@ def profiler(field: Optional[str] = "tottime", num: int = 10):
     if field is None:
         yield
         return
+    sys.setprofile(None)
     pr = cProfile.Profile()
     pr.enable()
-    yield
-    pr.disable()
-    pstats.Stats(pr).sort_stats(field).print_stats(num)
+    try:
+        yield
+    finally:
+        pr.disable()
+        pstats.Stats(pr).sort_stats(field).print_stats(num)
 
 
 def create_seed(seed: Optional[int] = None, max_seed: Optional[int] = 10**3 - 1) -> int:
@@ -125,6 +164,30 @@ def random_context(seed: Optional[int] = None):
         yield
     finally:
         random.setstate(state)
+
+
+def random_range(
+    start: int, stop: int, seed: Optional[int] = None, rng: Optional[random.Random] = None
+) -> Iterator[int]:
+    num = stop - start
+    if num <= 0:
+        return
+    if rng is None:
+        rng = random.Random(seed)
+    half_bits = max(1, ((num - 1).bit_length() + 1) // 2)
+    mask = (1 << half_bits) - 1
+    keys = [rng.getrandbits(32) for _ in range(3)]
+
+    def permute(index: int) -> int:
+        left, right = index >> half_bits, index & mask
+        for key in keys:
+            left, right = right, left ^ (((right ^ key) * 0x9E3779B1 + key) >> 5) & mask
+        return (left << half_bits) | right
+
+    for index in range(1 << (2 * half_bits)):
+        value = permute(index)
+        if value < num:
+            yield start + value
 
 
 def remove_path(path: str) -> bool:
@@ -205,6 +268,25 @@ def key_cache(function: Callable) -> Callable:
     return wrapper
 
 
+def instance_cache(method: Callable) -> Callable:
+    """Memoize a method into a per-instance dict.
+
+    Use instead of ``functools.cache`` on methods: that keys on ``self``, so the decorator's
+    process-global dict keeps every instance (and everything it references) alive forever.
+    """
+    attribute = f"_cache_{method.__name__}"
+
+    @wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        cache = self.__dict__.setdefault(attribute, {})
+        key = key_from_arguments(*args, **kwargs)
+        if key not in cache:
+            cache[key] = method(self, *args, **kwargs)
+        return cache[key]
+
+    return wrapper
+
+
 def filter_kwargs(filter_value: Optional[Any] = None, **kwargs: Any) -> Dict[str, Any]:
     return {key: value for key, value in kwargs.items() if value is not filter_value}
 
@@ -218,12 +300,7 @@ def str_from_sequence(sequence: List[Any]) -> str:
 
 
 def safe_zip(*sequences: List[Any]) -> List[Any]:
-    if not sequences:
-        return []
-    sequences = list(map(list, sequences))
-    for sequence in sequences:
-        assert len(sequence) == len(sequences[0]), (len(sequence), len(sequences[0]))
-    return list(zip(*sequences))
+    return list(zip(*sequences, strict=True))
 
 
 def safe_min(iterable: Iterable) -> float:
@@ -333,6 +410,14 @@ def downsample(iterator: Iterator[Any], frequency: Optional[int] = None) -> Iter
             yield element
 
 
+def downsample_range(num: int, step: int = 1, end: bool = True) -> List[int]:
+    values = list(range(0, num, step))
+    final_value = num - 1
+    if end and (final_value % step) != 0:
+        values.append(final_value)
+    return values
+
+
 def repeat_first(iterator: Iterator[Any], num: int = 0) -> Iterator[Any]:
     try:
         element = next(iterator)
@@ -368,7 +453,9 @@ def take(iterable: Iterable[Any], n: Optional[int] = None) -> Iterator[Any]:
     return islice(iterable, n)
 
 
-def batched(iterable: Iterable[Any], batch_size: int) -> Iterator[List[Any]]:
+def batched(iterable: Iterable[Any], batch_size: Optional[int] = None) -> Iterator[List[Any]]:
+    if batch_size is None:
+        batch_size = INF
     assert batch_size >= 1, batch_size
     iterator = iter(iterable)
     while True:
@@ -441,7 +528,16 @@ class Key:
         return self.key == other.key
 
     def __hash__(self) -> int:
-        return hash(self.type_key)
+        try:
+            return self._hash
+        except AttributeError:
+            self._hash = hash(self.type_key)
+            return self._hash
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state.pop("_hash", None)
+        return state
 
     def __lt__(self, other: "Key") -> bool:
         return self.key < other.key
@@ -452,7 +548,7 @@ class Key:
     __repr__ = __str__
 
 
-class Context:
+class Context(AbstractContextManager):
     def save(self) -> None:
         pass
 
@@ -496,3 +592,11 @@ class Silence(Context):
             return
         sys.stdout = self.stdout
         self.devnull.close()
+
+
+def get_curobo_major() -> Optional[int]:
+    """Return 2 for cuRoboV2, 1 for cuRoboV1, or None if curobo is not installed."""
+    try:
+        return 2 if importlib.util.find_spec("curobo._src") is not None else 1
+    except ModuleNotFoundError:
+        return None

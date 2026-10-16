@@ -78,6 +78,10 @@ class Expression:
     def is_simple(self) -> bool:
         return all(function.is_simple for function in self.functions)
 
+    @cached_property
+    def is_recursive(self) -> bool:
+        return any(term.is_recursive for term in self.terms)
+
     @property
     def clause(self) -> List["Expression"]:
         return [self]

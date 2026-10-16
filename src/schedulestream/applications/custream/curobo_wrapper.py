@@ -200,7 +200,7 @@ class CuRoboWrapper:
             self.set_link_active(active, link)
 
     @contextmanager
-    def link_spheres_saver(self, links: Optional[List[str]] = None):
+    def spheres_context(self, links: Optional[List[str]] = None):
         if links is None:
             links = self.links
         link_spheres = {}

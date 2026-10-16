@@ -20,7 +20,7 @@ from curobo.types.state import JointState
 # NVIDIA
 from schedulestream.applications.custream.command import ArmPath, Commands, Trajectory
 from schedulestream.applications.custream.grasp import Grasp
-from schedulestream.applications.custream.placement import Placement
+from schedulestream.applications.custream.placement import Placement, batch_placement_poses
 from schedulestream.applications.custream.spheres import add_cloud, add_spheres
 from schedulestream.applications.custream.state import Configuration
 from schedulestream.applications.custream.utils import (
@@ -30,7 +30,7 @@ from schedulestream.applications.custream.utils import (
     transform_spheres,
 )
 from schedulestream.applications.custream.world import World
-from schedulestream.common.utils import batched, current_time, elapsed_time
+from schedulestream.common.utils import batched, current_time, elapsed_time, safe_zip
 
 
 def compute_sphere_proximity(spheres1: torch.Tensor, spheres2: torch.Tensor) -> float:
@@ -84,7 +84,7 @@ def arm_path_collision(world: World, arm: str, arm_path: ArmPath, **kwargs) -> b
 
 
 def sphere_object_distances(
-    world: World, spheres: torch.Tensor, obj: str, pose: Optional[Pose] = False, debug: bool = False
+    world: World, spheres: torch.Tensor, obj: str, pose: Optional[Pose] = None, debug: bool = False
 ) -> torch.Tensor:
     world_from_obj = pose
     if world_from_obj is None:
@@ -93,7 +93,7 @@ def sphere_object_distances(
     collision_from_world = multiply_poses(collision_from_obj, world_from_obj.inverse())
 
     spheres = transform_spheres(collision_from_world, spheres)
-    with world.active_context(objects=None):
+    with world.active_context():
         world.enable_objects_active(active_names=[obj])
         distances = -world.get_sphere_distances(spheres)
 
@@ -123,7 +123,7 @@ def trajectory_placement_collision(
     distance = torch.min(distances)
     collision = distance <= collision_distance
     if debug and collision:
-        traj.scene().show()
+        traj.scene(downsample=10).show()
     return bool(collision)
 
 
@@ -152,6 +152,7 @@ def _joint_state_pair_collision(
     joint_state2: JointState,
     strict: bool = False,
     debug: bool = False,
+    verbose: bool = False,
 ) -> List[Tuple[int, int]]:
     joint_indices1 = world.get_joint_indices(joint_state1.joint_names)
     path1 = joint_state1.position
@@ -174,7 +175,7 @@ def _joint_state_pair_collision(
         j = index % len(path2)
         colliding_pairs.append((i, j))
 
-    if len(colliding_indices) != 0:
+    if verbose and (len(colliding_indices) != 0):
         print(
             f"Joint1: {joint_state1.joint_names[0]} | Path1: {len(path1)} | Joint2:"
             f" {joint_state2.joint_names[0]} | Path2: {len(path2)} | Colliding:"
@@ -241,29 +242,45 @@ def commands_conf_collision(
     return len(colliding_indices) != 0
 
 
-def object_object_collision(
+def asymmetric_object_object_collision(
     world: World,
-    obj1: str,
-    placement1: Placement,
-    obj2: str,
-    placement2: Placement,
+    batch_inputs: List[Tuple[str, Placement, str, Placement]],
     collision_distance: float = 0.0,
     verbose: bool = True,
     **kwargs: Any,
-) -> bool:
+) -> List[bool]:
+    num = len(batch_inputs)
+    obj1s, placement1s, obj2s, placement2s = safe_zip(*batch_inputs)
+    [obj1] = set(obj1s)
+    [obj2] = set(obj2s)
     if obj1 == obj2:
-        return False
+        return num * [False]
     start_time = current_time()
-    distances = sphere_object_distances(
-        world, placement1.spheres, obj2, placement2.get_pose(), **kwargs
-    )
-    distance = torch.min(distances)
-    collision = distance <= collision_distance
-    if verbose and collision:
+    body1 = world.get_object(obj1)
+    pose1 = batch_placement_poses(placement1s)
+    pose2 = batch_placement_poses(placement2s)
+    spheres = transform_spheres(pose1, body1.get_spheres_tensor())
+    sphere_distances = sphere_object_distances(world, spheres, obj2, pose2, **kwargs)
+    distances = torch.min(sphere_distances, dim=-1).values
+    collisions = distances <= collision_distance
+    if verbose and collisions.any():
         world.logger.debug(
-            f"Object1: {obj1} | Spheres: {placement1.spheres.shape[-2]} | Object2: {obj2} |"
-            f" Collision: {collision} | Distance: {distance:.3f} m | Elapsed:"
+            f"Object1: {obj1} | Spheres: {spheres.shape[-2]} | Object2: {obj2} | Collisions:"
+            f" {collisions.sum()}/{num} | Distances: [{torch.min(distances):.3f},"
+            f" {torch.max(distances):.3f}] m | Threshold: {collision_distance:.3f} m | Elapsed:"
             f" {elapsed_time(start_time):.3f} sec"
         )
+    return world.to_cpu(collisions).tolist()
 
-    return bool(collision)
+
+def object_object_collision(
+    world: World,
+    batch_inputs: List[Tuple[str, Placement, str, Placement]],
+    **kwargs: Any,
+) -> List[bool]:
+    collisions1 = asymmetric_object_object_collision(world, batch_inputs, **kwargs)
+    reverse_batch_inputs = [
+        (obj2, placement2, obj1, placement1) for obj1, placement1, obj2, placement2 in batch_inputs
+    ]
+    collisions2 = asymmetric_object_object_collision(world, reverse_batch_inputs, **kwargs)
+    return np.logical_or(collisions1, collisions2).tolist()

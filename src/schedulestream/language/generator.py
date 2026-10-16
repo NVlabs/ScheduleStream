@@ -153,12 +153,17 @@ def select_list_gen_fn_indices(
 
 
 def batch_list_gen_fn(
-    list_gen_fn: ConditionalGenerator, batch_size: Optional[int] = None, verbose: bool = False
+    list_gen_fn: ConditionalGenerator,
+    batch_size: Optional[int] = None,
+    max_iterations: Optional[int] = None,
+    verbose: bool = False,
 ):
     batch_size = batch_size or INF
+    max_iterations = INF if max_iterations is None else max_iterations
 
     def new_list_gen_fn(*args: Any, **kwargs: Any) -> Generator:
         list_gen = list_gen_fn(*args, **kwargs)
+        iterations = 0
         batch = []
         for i, outs in enumerate(list_gen):
             empty_outs = not outs
@@ -170,14 +175,46 @@ def batch_list_gen_fn(
                 yield batch[:num].copy()
                 del batch[:num]
                 empty_outs = False
+                iterations += 1
+                if iterations >= max_iterations:
+                    break
         if batch:
             yield batch.copy()
+        yield from list_gen
 
     return new_list_gen_fn
 
 
 def constant_fn(value: Any) -> Callable[[Any], Any]:
     return lambda *args, **kwargs: value
+
+
+def scale_fn(fn: Callable[[Any], float], scale: float) -> Callable[[Any], Any]:
+    def new_fn(*args: Any, **kwargs: Any) -> Any:
+        result = fn(*args, **kwargs)
+        if isinstance(result, (list, tuple)):
+            return type(result)(scale * v for v in result)
+        return scale * result
+
+    return new_fn
+
+
+def negate_test(test: Callable[[Any], bool]) -> Callable[[Any], Any]:
+    def new_test(*args: Any, **kwargs: Any) -> Any:
+        result = test(*args, **kwargs)
+        if isinstance(result, (list, tuple)):
+            return type(result)(not value for value in result)
+        return not result
+
+    return new_test
+
+
+def batch_fn_from_fn(fn: Callable[[Any], float]) -> Callable[[List[Any]], List[float]]:
+    return lambda input_list: [fn(*inputs) for inputs in input_list]
+
+
+def fn_from_batch_fn(fn: Callable[[List[Any]], List[float]]) -> Callable[[Any], float]:
+    return lambda *inputs: fn([inputs])[0]
 
 
 true_test = constant_fn(True)
@@ -239,6 +276,12 @@ def batch_fn_from_list_gen_fn(list_gen_fn: ConditionalGenerator) -> ConditionalB
         return batch_pairs
 
     return batch_fn
+
+
+def truncate_batch_fn(batch_fn: ConditionalBatch, max_outputs: int) -> ConditionalBatch:
+    if max_outputs == INF:
+        return batch_fn
+    return lambda *args, **kwargs: batch_fn(*args, **kwargs)[:max_outputs]
 
 
 def select_batch_fn_indices(

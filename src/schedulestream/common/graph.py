@@ -10,6 +10,7 @@
 #
 # Standard Library
 import os
+import tempfile
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -233,7 +234,7 @@ def visualize_graph(
         vertices = vertices_from_edges(edges)
     vertex_colors = vertex_colors or {}
     if image_path is None:
-        image_path = f"/tmp/plan.png"
+        image_path = os.path.join(tempfile.gettempdir(), f"plan-{os.getpid()}.png")
 
     graph = AGraph(strict=True, directed=True)
     graph.node_attr["style"] = "filled"

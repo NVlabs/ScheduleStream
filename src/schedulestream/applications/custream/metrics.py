@@ -47,12 +47,12 @@ def compute_joint_distance(trajectory: Optional[JointState], **kwargs: Any) -> f
     return distances.sum().item()
 
 
-def compute_ee_distance(cu_world: World, trajectory: Optional[JointState], **kwargs) -> float:
+def compute_ee_distance(world: World, trajectory: Optional[JointState], **kwargs) -> float:
     if trajectory is None:
         return INF
     if len(trajectory) == 0:
         return 0.0
-    ee_poses = cu_world.get_ee_poses(confs=trajectory.position)
+    ee_poses = world.get_ee_poses(confs=trajectory.position)
     differences = ee_poses.position[:-1, :] - ee_poses.position[1:, :]
     distances = torch.norm(differences, dim=1, **kwargs)
     return distances.sum().item()

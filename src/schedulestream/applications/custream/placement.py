@@ -9,8 +9,7 @@
 # its affiliates is strictly prohibited.
 #
 # Standard Library
-from functools import cached_property
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 # Third Party
 import numpy as np
@@ -45,12 +44,14 @@ class Placement(Attachment):
         pose: Optional[Pose] = None,
         parent: Optional[str] = None,
         placement: Optional["Placement"] = None,
+        world_pose: Optional[Pose] = None,
         **kwargs: Any,
     ):
         if placement is not None:
             assert (parent is None) or (parent == placement.obj)
             parent = placement.obj
         self.placement = placement
+        self.world_pose = world_pose
         super().__init__(world, obj, pose=pose, parent=parent, **kwargs)
 
     @property
@@ -68,8 +69,13 @@ class Placement(Attachment):
             return super().get_parent_pose()
         return self.placement.get_pose()
 
-    def stack(self, placement: "Placement") -> "Placement":
-        return self.__class__(self.world, self.obj, self.pose, placement=placement)
+    def get_pose(self) -> Pose:
+        if self.world_pose is None:
+            return super().get_pose()
+        return self.world_pose
+
+    def stack(self, placement: "Placement", **kwargs: Any) -> "Placement":
+        return self.__class__(self.world, self.obj, self.pose, placement=placement, **kwargs)
 
     def set(self) -> None:
         if self.placement is not None:
@@ -96,6 +102,10 @@ class Placement(Attachment):
         return f"{prefix}{id(self) % 1000}"
 
     __repr__ = __str__
+
+
+def batch_placement_poses(placements: List[Placement]) -> Pose:
+    return Pose.cat([placement.get_pose() for placement in placements])
 
 
 def get_stacked_objects(world: World, names: List[str] = None) -> Dict[str, str]:
@@ -132,14 +142,22 @@ def sample_se2(
     position_interval: Tuple[np.ndarray, np.ndarray] = (-np.zeros(3), +np.zeros(3)),
     axis: Tuple[float] = (0.0, 0.0, 1.0),
     angle_interval: Tuple[float, float] = (-np.pi, +np.pi),
+    angle_discretization: Optional[int] = None,
     batch_size: int = 1,
 ) -> Pose:
     position_lower, position_upper = world.to_device(np.array(position_interval))
     position = sample_uniformly(position_lower, position_upper, num=batch_size)
 
     axis = world.to_device(np.array(axis)).repeat(batch_size, 1)
-    angle_lower, angle_upper = world.to_device(np.expand_dims(angle_interval, axis=-1))
-    yaw = sample_uniformly(angle_lower, angle_upper, num=batch_size)
+    if angle_discretization is None:
+        angle_lower, angle_upper = world.to_device(np.expand_dims(angle_interval, axis=-1))
+        yaw = sample_uniformly(angle_lower, angle_upper, num=batch_size)
+    else:
+        angle_lower, angle_upper = angle_interval
+        yaws = np.linspace(
+            start=angle_lower, stop=angle_upper, num=angle_discretization, endpoint=False
+        )
+        yaw = world.to_device(np.random.choice(yaws, size=batch_size)).unsqueeze(1)
     quaternion = quat_from_axis_angle(axis, yaw)
 
     return Pose(position=position, quaternion=quaternion)
@@ -151,7 +169,7 @@ def placement_generator(
     obj2: Union[str, Object],
     batch_size: int = 10,
     debug: bool = False,
-) -> Iterable[Pose]:
+) -> Iterator[Placement]:
     obj1 = world.get_object(obj1)
     obj2 = world.get_object(obj2)
     surface_config = obj2.surface_config

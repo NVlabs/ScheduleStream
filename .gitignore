@@ -1,18 +1,3 @@
-# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-#
-# Template version: v1.21.0
-
-#######################################################
-# KEEP ITEMS IN ALPHABETICAL ORDER WITHIN THEIR GROUP #
-#######################################################
-
 # Temporary and binary files
 *~
 *.log
@@ -79,5 +64,20 @@ venv*/*
 *checkpoint.ipynb
 
 # Custom
-src/schedulestream/applications/custream/cache/
+src/schedulestream/applications/custream/cache/*
+!src/schedulestream/applications/custream/cache/spheres/
+src/schedulestream/applications/custream/cache/spheres/*
+!src/schedulestream/applications/custream/cache/spheres/droid_franka_robotiq_on_stand_1.350-3133160842.yml
+!src/schedulestream/applications/custream/cache/spheres/arm0_panda_instanceable-arm1_panda_instanceable-1355224366.yml
+src/schedulestream/applications/isaaclab/cache/*
+!src/schedulestream/applications/isaaclab/cache/urdf/
+src/schedulestream/applications/isaaclab/cache/urdf/*
+!src/schedulestream/applications/isaaclab/cache/urdf/droid_franka_robotiq_on_stand_1.350-4060848256/
+!src/schedulestream/applications/isaaclab/cache/urdf/panda_instanceable-1131104207/
 
+src/schedulestream/applications/isaaclab/cache/urdf/droid_franka_robotiq_on_stand_1.350-4060848256/meshes/franka_table_visuals_visuals.obj
+
+.claude/
+
+# Recorded videos
+videos/

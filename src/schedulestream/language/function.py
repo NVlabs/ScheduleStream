@@ -17,15 +17,19 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 # NVIDIA
 from schedulestream.common.utils import (
     apply_binding,
+    batched,
     compute_mapping,
+    flatten,
     implies,
     remove_duplicates,
+    safe_zip,
     str_from_sequence,
 )
 from schedulestream.language.anonymous import Anonymous, rename_anonymous
 from schedulestream.language.argument import (
     FUNCTION_PARAMETER,
     Argument,
+    Constant,
     InputParameter,
     InputParameters,
     Parameter,
@@ -50,16 +54,16 @@ InputFormula = Optional[Union[List["Formula"], "Formula"]]
 
 
 def create_type_formula(typed_parameters: TypedParameters, object_type: bool = True) -> Formula:
-    type_atoms = {ty(parameter) for parameter, ty in typed_parameters.items() if ty is not None}
+    type_atoms = [ty(parameter) for parameter, ty in typed_parameters.items() if ty is not None]
     if object_type:
         # NVIDIA
         from schedulestream.language.predicate import Value
 
-        type_atoms.update(Value(parameter) for parameter in typed_parameters.keys())
+        type_atoms.extend(Value(parameter) for parameter in typed_parameters.keys())
     # NVIDIA
     from schedulestream.language.connective import Conjunction
 
-    return Conjunction(*type_atoms)
+    return Conjunction(*dict.fromkeys(type_atoms))
 
 
 def create_formula(formula: InputFormula) -> Formula:
@@ -79,6 +83,7 @@ class Function(Anonymous):
         parameters: InputParameters = None,
         condition: InputFormula = None,
         definition: Optional[Union[Formula, Callable[[Any], Any]]] = None,
+        batch_size: Optional[int] = None,
         fluents: Optional[List["Function"]] = None,
         fluent: bool = False,
         language: Optional[str] = None,
@@ -87,14 +92,15 @@ class Function(Anonymous):
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.instances = {}
         self.set_definition(definition)
+        self.batch_size = batch_size
         fluents = list(fluents or [])
         implies(not self.is_procedural, not fluents)
         self.fluents = fluents
         self.fluent = fluent
         self.typed_parameters = create_typed_parameters(parameters)
         self.language = language
-        self.instances = {}
 
         self.default_value = wrap_argument(default)
         self.lazy = lazy
@@ -156,10 +162,32 @@ class Function(Anonymous):
     def is_static(self):
         return self.is_procedural and not self.fluent
 
+    def reset(self) -> None:
+        self.instances.clear()
+
     def set_definition(self, definition: Optional[Union[Formula, Callable[[Any], Any]]]) -> None:
         self.definition = definition
+        for instance in self.instances.values():
+            instance._static_value = None
+
+    def evaluate_batch(self, terms: List[Term]) -> List[RawConstant]:
+        if self.batch_size is None:
+            return [term.evaluate() for term in terms]
+        new_terms = [term for term in terms if not term.is_evaluated()]
+        new_inps = [unwrap_arguments(term.arguments) for term in new_terms]
+        new_outs = list(flatten(map(self.definition, batched(new_inps, self.batch_size))))
+        assert len(new_inps) == len(new_outs), (len(new_inps), len(new_outs))
+        for term, out in safe_zip(new_terms, new_outs):
+            term.set_value(out)
+        return [term.evaluate() for term in terms]
 
     def instantiate(self, arguments: List[Argument]) -> "Term":
+        try:
+            instance = self.instances.get(tuple(arguments))
+        except TypeError:
+            instance = None
+        if instance is not None:
+            return instance
         arguments = tuple(wrap_arguments(arguments))
         if arguments not in self.instances:
             self.instances[arguments] = Term(self, list(arguments))
@@ -229,6 +257,10 @@ class Term(Expression):
     def mapping(self) -> Dict[Parameter, Argument]:
         return compute_mapping(self.function.parameters, self.arguments)
 
+    @property
+    def parameter_values(self) -> Dict[Parameter, Argument]:
+        return self.mapping
+
     def get_argument(self, parameter: InputParameter) -> Any:
         return unwrap_argument(self.mapping[parameter])
 
@@ -252,10 +284,21 @@ class Term(Expression):
         return Term(self.function, self.unwrap_arguments())
 
     def bind(self, mapping: Dict[Parameter, Argument]) -> "Term":
-        arguments = apply_binding(mapping, self.arguments)
+        arguments = []
+        for argument in self.arguments:
+            if isinstance(argument, Term):
+                arguments.append(argument.bind(mapping))
+            else:
+                arguments.append(mapping.get(argument, argument))
         return self.function.instantiate(tuple(arguments))
 
     def instantiate(self, argument: Argument) -> "Evaluation":
+        try:
+            instance = self.instances.get(argument)
+        except TypeError:
+            instance = None
+        if instance is not None:
+            return instance
         argument = wrap_argument(argument)
         if argument not in self.instances:
             self.instances[argument] = Evaluation(self, argument)
@@ -273,23 +316,31 @@ class Term(Expression):
             return False
         return all(arg.is_static for arg in self.arguments)
 
+    def set_value(self, value: Any) -> None:
+        self.lazy = False
+        self._static_value = wrap_argument(value)
+
     def is_evaluated(self) -> bool:
         return self.is_static and (self._static_value is not None)
 
     @property
-    def _evaluate_static(self, verbose: bool = False) -> RawConstant:
+    def _evaluate_static(self, verbose: bool = False) -> Constant:
         assert not self.function.fluent
         self.lazy = False
         if self._static_value is None:
             inputs = unwrap_arguments(self.arguments)
-            output = wrap_argument(self.function.definition(*inputs))
+            if self.function.batch_size is None:
+                output = self.function.definition(*inputs)
+            else:
+                [output] = self.function.definition([inputs])
+            self.set_value(output)
             if verbose:
-                print(f"{self}={output}")
-            self._static_value = output
+                print(f"{self}={self._static_value}")
         return self._static_value
 
-    def _evaluate_fluent(self, state: State, verbose: bool = False) -> RawConstant:
+    def _evaluate_fluent(self, state: State, verbose: bool = False) -> Constant:
         assert self.function.fluent
+        assert self.function.batch_size is None
         self.lazy = False
         if state not in self._fluent_values:
             inputs = unwrap_arguments(self.arguments)
@@ -299,7 +350,7 @@ class Term(Expression):
             self._fluent_values[state] = output
         return self._fluent_values[state]
 
-    def _evaluate(self, state: Optional[State]) -> RawConstant:
+    def _evaluate(self, state: Optional[State]) -> Constant:
         if self.is_recursive:
             return self.ground(state)._evaluate(state)
         if not self.function.is_procedural:
@@ -352,6 +403,17 @@ class Term(Expression):
 
     def __lt__(self, other: "Term") -> bool:
         return self.function < other.function
+
+    def __add__(self, other: Any) -> "Formula":
+        # NVIDIA
+        from schedulestream.language.connective import Sum
+
+        if not isinstance(other, Formula):
+            other = wrap_argument(other)
+        return Sum(self, other).flatten()
+
+    def __radd__(self, other: Any) -> "Formula":
+        return self + other
 
     def __str__(self) -> str:
         return f"{self.function.name}({str_from_sequence(self.arguments)})"

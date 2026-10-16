@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 from schedulestream.common.graph import transitive_reduction, visualize_graph
 from schedulestream.common.ordered_set import OrderedSet
 from schedulestream.common.utils import INF, current_time, get_dataclass_dict, get_length, get_pairs
-from schedulestream.language.action import Action, ActionInstance
+from schedulestream.language.action import Action, ActionInstance, GoalAction
 from schedulestream.language.argument import Constant
 from schedulestream.language.expression import Formula
 from schedulestream.language.state import State
@@ -74,6 +74,18 @@ class Solution:
     @property
     def success(self):
         return self.plan is not None
+
+    @property
+    def is_linear(self) -> bool:
+        return True
+
+    @property
+    def filtered_plan(self) -> Optional[Plan]:
+        """Return :attr:`plan` with GoalAction instances (added to compile Disjunction goals) removed.
+        """
+        if self.plan is None:
+            return None
+        return [action for action in self.plan if not isinstance(action.lifted, GoalAction)]
 
     @property
     def length(self) -> float:

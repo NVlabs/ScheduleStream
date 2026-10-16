@@ -8,6 +8,15 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 #
+# Third Party
+import pytest
+
+# NVIDIA
+from schedulestream.common.utils import get_curobo_major
+
+if get_curobo_major() != 1:
+    pytest.skip("requires cuRoboV1", allow_module_level=True)
+
 # NVIDIA
 from schedulestream.applications.custream.example import example
 from schedulestream.applications.custream.tutorial import tutorial

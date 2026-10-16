@@ -1,13 +1,3 @@
-# Copyright (c) 2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-#
-# Template version: v1.21.0+2
 [build-system]
 requires = ["setuptools>=61", "setuptools-scm>=8.0.0"]
 build-backend = "setuptools.build_meta"
@@ -17,69 +7,33 @@ name = "schedulestream"
 authors = [
   {name = "Caelan Garrett"},
 ]
-description = "ScheduleStream"
-keywords = ["docker"]
+description = "Temporal planning with samplers for multi-arm task and motion planning (TAMP)"
+keywords = ["planning", "scheduling", "robotics", "task and motion planning"]
 classifiers = [
   "Operating System :: OS Independent",
   "Intended Audience :: Developers",
   "Natural Language :: English",
   "Programming Language :: Python :: 3",
-  "Framework :: Robot Framework :: Library",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dynamic = ["version", "readme"]
 license = {file = "LICENSE"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 dependencies = [
-  "setuptools-scm>=8.0.0",
-   "pyyaml",
+  "pyyaml",
 ]
+
+[project.urls]
+Homepage = "https://schedulestream.github.io/"
+Paper = "https://arxiv.org/abs/2511.04758"
+Repository = "https://github.com/NVlabs/ScheduleStream"
 
 [project.optional-dependencies]
-ci = [
-  # Linting
-  # -------
-  "black==22.6.0",
-  "flake8==7.0.0",
-  "flake8-copyright==0.2.4",
-  "flake8-docstrings==1.7.0",
-  "flake8-isort==6.1.1",
-  "flake8-rst-docstrings==0.3.0",
-  "flake8-pyproject==1.2.3",
-  "mypy==1.7.0",
-  "pep8-naming==0.13.2",
-
-  # Testing
-  # -------
-  "pytest==8.3.4",
-  "pytest-cov==3.0.0",
-  "pytest-xdist==3.6.1",
-
-  # Documentation generating
-  # ------------------------
-  "docutils==0.20.1",
-  "graphviz==0.19.1",
-  "sphinx==7.2.6",
-  "sphinx-rtd-theme==2.0.0",
-  "sphinx-copybutton==0.5.2",
-
-  # Packaging
-  # ---------
-  "build==1.0.3",
-  "twine==3.7.1",
-
-  # Other
-  # -----
-  "anybadge==1.8.0",
-
-  # Jupyter linting
-  # ---------------
-  # "black[jupyter]==22.6.0",
-  # "ipykernel==6.26.0",
-  # "nbclient==0.7.4",
-  # "nbconvert==7.9.2",
-  # "nbformat==5.9.2",
-]
+test = ["pytest"]
 
 dev = [
   "ipdb",
@@ -98,41 +52,41 @@ trimesh2d = [
   "imageio[ffmpeg]",
 ]
 
-custream = [
+custream = ["schedulestream[trimesh2d]", "structlog", "packaging", "yourdfpy"]
+
+# cuStream2: cuRoboV2 (pinned source commit) and a CUDA-matched torch. The torch CUDA wheel
+# index must be passed explicitly (pip does not read uv's index config):
+#
+#   CUDA 13.x: pip install -e ".[custream2]" --extra-index-url https://download.pytorch.org/whl/cu130
+#   CUDA 12.x: pip install -e ".[custream2-cu12]" --extra-index-url https://download.pytorch.org/whl/cu128
+custream2-base = [
   "numpy",
+  "trimesh",
   "scipy",
-  "trimesh",
+  "matplotlib",
+  "packaging",
+  "huggingface-hub",
+  "structlog",
+  "pyglet<2",
   "python-fcl",
-  "pyglet<2",
-  "pillow",
-  "imageio[ffmpeg]",
-
-  "structlog",
-  #"matplotlib",
+  "fast_simplification",
 ]
 
-isaaclab = [
-  "numpy",
-  "scipy",
-  "trimesh",
-  "python-fcl",
-  "pyglet<2",
-  "pillow",
-  "imageio[ffmpeg]",
-
-  "structlog",
-  #"matplotlib",
-  "warp-lang==1.9.0",
+custream2 = [
+  "schedulestream[custream2-base]",
+  "torch>=2.9",
+  "nvidia-curobo[cu13] @ git+https://github.com/NVlabs/curobo@78fd485fa82d9b9a063fb4985e371814587e666a",
 ]
 
-cumotion = [
-  "trimesh",
-  "pyglet<2",
-  "structlog",
+custream2-cu12 = [
+  "schedulestream[custream2-base]",
+  "torch>=2.5",
+  "nvidia-curobo[cu12] @ git+https://github.com/NVlabs/curobo@78fd485fa82d9b9a063fb4985e371814587e666a",
 ]
 
-[project.scripts]
-# Add here CLI scripts here:
+isaaclab = ["schedulestream[custream]", "warp-lang==1.9.0"]
+
+cumotion = ["trimesh", "pyglet<2", "structlog"]
 
 [tool.setuptools]
 platforms = ["any"]
@@ -158,57 +112,6 @@ line-length = 100
 extend-exclude = "deprecated/"
 preview = true
 
-[tool.flake8]
-max-line-length = 100
-select = ["E", "F", "W", "C" , "D", "I", "N", "RST"]
-exclude = [".git", "build", "deprecated", "dist", "venv", "wip"]
-ignore = [
-  "D105", # (don't require docstrings for magic methods)
-  "E203", # (to be Black compatible)
-  "E731", # (ignore recommendation to not use lambdas because there is no other way to write a single line function with out warnings)
-  "RST201", "RST203", "RST301", # (to be Google Python style compatible, see: https://github.com/peterjc/flake8-rst-docstrings/issues/17)
-  "W503", # (this is deprecated, see: https://lintlyci.github.io/Flake8Rules/rules/W503.html)
-]
-per-file-ignores = [
-  "tests/*_test.py:D103",
-]
-docstring-convention = "google"
-rst-roles = [
-  "attr",
-  "class",
-  "func",
-  "meth",
-  "mod",
-  "obj",
-  "ref",
-  "term",
-]
-rst-directives = [
-  "autosummary",
-  "data",
-  "currentmodule",
-  "deprecated",
-  "envvar",
-  "exception",
-  "glossary",
-  "moduleauthor",
-  "plot",
-  "testcode",
-  "versionadded",
-  "versionchanged",
-]
-rst-substitutions = [
-  "version",
-]
-# Needed to prevent false N804 and N805 errors when using the `abc` module
-# See: https://github.com/pycqa/pep8-naming#options
-classmethod-decorators = ["classmethod", "abstractclassmethod"]
-staticmethod-decorators = ["staticmethod", "abstractstaticmethod"]
-copyright-check = true
-# See the following page about NVIDIA's copyright header
-# https://confluence.nvidia.com/pages/viewpage.action?pageId=788418816
-copyright-regexp = "Copyright \\(c\\) 20\\d{2}(?:-20\\d{2})?, NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n\\#\n\\# NVIDIA CORPORATION\\, its affiliates and licensors retain all intellectual\n\\# property and proprietary rights in and to this material, related\n\\# documentation and any modifications thereto. Any use, reproduction,\n\\# disclosure or distribution of this material and related documentation\n\\# without an express license agreement from NVIDIA CORPORATION or\n\\# its affiliates is strictly prohibited.\n[^\\s]"
-
 [tool.isort]
 # Multi line output mode 3 is used to conform with Black. See
 # https://github.com/PyCQA/isort#multi-line-output-modes
@@ -221,36 +124,3 @@ known_first_party = ["nvidia"]
 import_heading_localfolder = "Local Folder"
 line_length = 100
 skip_glob = ["deprecated/*", "wip/*"]
-
-[tool.pytest.ini_options]
-norecursedirs = [".git", ".venv", "deprecated", "dist", "wip"] # build
-python_files = ["*_test.py"]
-
-[tool.coverage.report]
-# NOTE: Single-quoted strings are required in TOML for regular expressions
-exclude_lines = [
-  "pragma: no cover", # Need to re-enable the standard no cover match
-  '^\s*pass\s*$',  # Skip any pass lines
-]
-
-[tool.mypy]
-disallow_untyped_defs = true
-no_implicit_optional = true
-show_error_codes = true
-warn_unused_ignores = true
-exclude = [
-  "build",
-  "deprecated",
-  "dist",
-  "docs",
-  "venv",
-  "wip",
-]
-
-[[tool.mypy.overrides]]
-module = [
-  "importlib.metadata",
-  "setuptools",
-  "setuptools_scm",
-]
-ignore_missing_imports = true

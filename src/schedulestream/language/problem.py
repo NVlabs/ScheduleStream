@@ -22,9 +22,9 @@ from schedulestream.common.utils import (
     not_null,
     remove_duplicates,
 )
-from schedulestream.language.action import DEFAULT_COST, Action, ActionInstance
+from schedulestream.language.action import DEFAULT_COST, Action, ActionInstance, GoalAction
 from schedulestream.language.argument import Constant, wrap_argument
-from schedulestream.language.connective import Conjunction
+from schedulestream.language.connective import Conjunction, Disjunction, Serialized
 from schedulestream.language.durative import DurativeAction
 from schedulestream.language.expression import Formula
 from schedulestream.language.function import (
@@ -34,8 +34,8 @@ from schedulestream.language.function import (
     Term,
     create_formula,
 )
-from schedulestream.language.lazy import lazy_function
-from schedulestream.language.predicate import Predicate, Type
+from schedulestream.language.lazy import LazyOutput, lazy_batch_function, lazy_function
+from schedulestream.language.predicate import Goal, Predicate, Type
 from schedulestream.language.state import State
 from schedulestream.language.stream import Stream
 from schedulestream.language.utils import get_fluent_functions, infer_state, simplify_conjunction
@@ -65,6 +65,15 @@ class Problem(ProblemABC):
     ):
         self.actions = list(actions or [])
         self.streams = list(streams or [])
+
+        goal = create_formula(goal).flatten()
+        if isinstance(goal, Disjunction):
+            for i, part in enumerate(goal.formulas):
+                self.actions.append(GoalAction(precondition=part, name=f"goal{i}"))
+            goal = Goal()
+        if goal.is_recursive:
+            self.actions.append(GoalAction(precondition=goal, name="goal"))
+            goal = Goal()
 
         if isinstance(initial, State):
             initial = initial
@@ -130,6 +139,42 @@ class Problem(ProblemABC):
                 if isinstance(action, DurativeAction)
             )
         )
+
+    def get_relevant_actions(self, functions: Optional[List[Function]] = None) -> List[Action]:
+        if functions is None:
+            functions = self.goal.functions
+        actions = self.actions
+        while True:
+            needed = set(functions).union(
+                flatten(action.precondition.functions for action in actions)
+            )
+            relevant = [
+                action for action in actions if needed.intersection(action.effect.functions)
+            ]
+            if len(relevant) == len(actions):
+                return actions
+            actions = relevant
+
+    def get_relevant_streams(self, functions: Optional[List[Function]] = None) -> List[Stream]:
+        if functions is None:
+            functions = self.condition_functions
+        streams = self.streams
+        while True:
+            needed = set(functions).union(
+                flatten(stream.input_condition.functions for stream in streams)
+            )
+            relevant = [
+                stream
+                for stream in streams
+                if needed.intersection(stream.output_condition.functions)
+            ]
+            if len(relevant) == len(streams):
+                return streams
+            streams = relevant
+
+    def reduce(self) -> None:
+        self.actions = self.get_relevant_actions()
+        self.streams = self.get_relevant_streams()
 
     @property
     def static_functions(self) -> List[Function]:
@@ -222,48 +267,65 @@ class Problem(ProblemABC):
         for action in self.actions:
             action.cost = wrap_argument(0.0)
 
-    def add_partial_plan(self, partial_plan: PartialPlan) -> "Problem":
-        goal = self.goal
+    def add_partial_plan(self, partial_plan: PartialPlan, serialize: bool = True) -> None:
+        atoms = []
         for action in partial_plan.actions:
             lifted = self.get_action(action.name)
-            predicate = lifted.add_applied_predicate(action.bound_parameters)
+            predicate = lifted.add_applied_effect(action.bound_parameters)
             arguments = apply_mapping(action.parameter_values, predicate.parameters)
-            atom = predicate.atom(arguments)
-            goal = Conjunction(goal, atom).flatten()
+            atoms.append(predicate.atom(arguments))
+        if serialize:
+            self.goal = Serialized([*atoms, self.goal])
+        else:
+            self.goal = Conjunction(self.goal, *atoms).flatten()
 
-        return self.__class__(
-            initial=self.initial,
-            goal=goal,
-            actions=self.actions,
-            streams=self.streams,
-            parent=self,
-        )
-
-    def remove_conditions(self, functions: List[Function]) -> "Problem":
-        return self.__class__(
+    def remove_conditions(
+        self, functions: List[Function], reduce: bool = True, parent: bool = True
+    ) -> "Problem":
+        problem = self.__class__(
             initial=self.initial,
             goal=self.goal.remove_functions(functions),
             actions=[action.remove_conditions(functions) for action in self.actions],
             streams=self.streams,
-            parent=self,
+            parent=self if parent else None,
+        )
+        if reduce:
+            problem.reduce()
+        return problem
+
+    def instantaneous(self, parent: bool = True) -> "Problem":
+        """Return a copy whose DurativeActions are reduced to instantaneous Actions."""
+        return self.__class__(
+            initial=self.initial,
+            goal=self.goal,
+            actions=[
+                action.instantaneous() if isinstance(action, DurativeAction) else action
+                for action in self.actions
+            ],
+            streams=self.streams,
+            parent=self if parent else None,
         )
 
-    def lazily_wrap_functions(self, duration: float = 1e-2) -> None:
+    def lazily_wrap_functions(self, duration: float = 1e-2, cost: float = 1e2) -> None:
         for function in self.procedural_functions:
             if function in self.duration_functions:
-                function.self = wrap_argument(duration)
+                function.default_value = wrap_argument(duration)
             elif function in self.cost_functions:
-                function.default_value = wrap_argument(DEFAULT_COST)
-            lazy_function(function)
+                function.default_value = wrap_argument(cost)
+            if function.batch_size is None:
+                lazy_function(function)
+            else:
+                lazy_batch_function(function)
 
     def clone(
         self,
+        initial: Optional[State] = None,
         actions: Optional[List[Action]] = None,
         streams: Optional[List[Stream]] = None,
         parent: bool = True,
     ) -> "Problem":
         return self.__class__(
-            initial=self.initial,
+            initial=not_null(initial, self.initial),
             goal=self.goal,
             actions=not_null(actions, self.actions),
             streams=not_null(streams, self.streams),
@@ -274,6 +336,16 @@ class Problem(ProblemABC):
         streams = [stream.lazy_clone(parent=False, **kwargs) for stream in self.streams]
         lazy_problem = self.clone(streams=streams, parent=parent)
         return lazy_problem
+
+    def reset(self) -> None:
+        for stream in self.streams:
+            stream.reset()
+        for action in self.actions:
+            action.reset()
+        for function in self.functions:
+            function.reset()
+        LazyOutput.reset()
+        Constant.reset()
 
     def dump(self) -> None:
         initial_frequencies = Counter(evaluation.name for evaluation in self.initial)
@@ -379,7 +451,6 @@ class InstantiatedProblem(ProblemABC):
                 actions.append(action)
 
         goal = simplify_conjunction(self.goal, self.initial, fluents)
-
         fluent_evaluations = [
             evaluation for evaluation in self.initial.evaluations if evaluation.term in fluents
         ]
